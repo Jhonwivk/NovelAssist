@@ -1,0 +1,207 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Design Tokens（§9）===== */
+/* 暗色为默认 */
+:root,
+.dark {
+  --c-bg: #0f1115;
+  --c-surface: #171a21;
+  --c-surface-2: #21252e;
+  --c-surface-3: #2a2f3a;
+  --c-border: #262b34;
+  --c-border-2: #323845;
+  --c-fg: #e8eaed;
+  --c-fg-muted: #9aa0a6;
+  --c-fg-faint: #5f6368;
+  --c-primary: #7c5cff;
+  --c-primary-soft: #241f47;
+  --c-accent: #00d4aa;
+  --c-warn: #ffb020;
+  --c-danger: #ff5959;
+  --c-info: #4a9eff;
+  --c-ring: rgba(124, 92, 255, 0.45);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.light {
+  --c-bg: #f7f7f5;
+  --c-surface: #ffffff;
+  --c-surface-2: #f1efe9;
+  --c-surface-3: #e7e3da;
+  --c-border: #e4e1d8;
+  --c-border-2: #d6d2c6;
+  --c-fg: #2a2722;
+  --c-fg-muted: #6b6655;
+  --c-fg-faint: #9a9486;
+  --c-primary: #6b4eff;
+  --c-primary-soft: #ece9ff;
+  --c-accent: #00b894;
+  --c-warn: #e08a00;
+  --c-danger: #e23b3b;
+  --c-info: #2b7de9;
+  --c-ring: rgba(107, 78, 255, 0.35);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--c-bg);
+  color: var(--c-fg);
+  font-family: 'PingFang SC', 'Microsoft YaHei', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-fg-faint);
+}
+
+/* ===== TipTap 编辑器（写作沉浸）===== */
+.ProseMirror {
+  min-height: 70vh;
+  outline: none;
+  font-family: 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 17px;
+  line-height: 1.9;
+  color: var(--c-fg);
+}
+.ProseMirror:focus {
+  outline: none;
+}
+.ProseMirror p {
+  margin: 0 0 1em;
+  text-indent: 2em;
+}
+.ProseMirror p.no-indent {
+  text-indent: 0;
+}
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3 {
+  font-weight: 700;
+  margin: 1.2em 0 0.5em;
+  text-indent: 0;
+}
+.ProseMirror blockquote {
+  border-left: 3px solid var(--c-primary);
+  padding-left: 1rem;
+  color: var(--c-fg-muted);
+  margin: 1em 0;
+  text-indent: 0;
+}
+.ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--c-border);
+  margin: 1.5em 0;
+}
+
+/* 内联一致性标记（§5.3）*/
+.mark-issue-high {
+  text-decoration: underline wavy var(--c-danger);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+  cursor: help;
+}
+.mark-issue-medium {
+  text-decoration: underline wavy var(--c-warn);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+  cursor: help;
+}
+.mark-foreshadow {
+  border-bottom: 1px dashed var(--c-info);
+  cursor: help;
+}
+.mark-ai-fresh {
+  background: var(--c-primary-soft);
+  border-radius: 2px;
+  transition: background 0.6s ease;
+}
+
+/* 动效（§9.3）*/
+.animate-fade-in {
+  animation: fadeIn 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-pulse-soft {
+  animation: pulseSoft 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes pulseSoft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Linear 风格：全局 focus-visible ring */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--c-bg), 0 0 0 4px var(--c-ring);
+}
+
+/* 小节标签（overline）*/
+.text-overline {
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-fg-faint);
+  font-weight: 600;
+}
+
+/* 骨架 shimmer */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--c-surface-2);
+}
+.skeleton::after {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+  animation: shimmer 1.5s infinite;
+  content: '';
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 隐藏滚动条 */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}

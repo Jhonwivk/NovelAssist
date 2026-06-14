@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+.next/
+out/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# database (sqlite)
+*.db
+*.db-journal
+apps/backend/prisma/dev.db
+apps/backend/prisma/dev.db-journal
+apps/backend/prisma/*.db
+
+# python
+apps/ai-service/.venv/
+__pycache__/
+*.py[cod]
+.python-version
+
+# logs
+*.log
+npm-debug.log*
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

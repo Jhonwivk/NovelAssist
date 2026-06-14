@@ -1,0 +1,316 @@
+// =============================================================================
+// AI 辅助小说创作系统 — Prisma schema（plan §9）
+// datasource: SQLite（本地零配置，无 Docker）；阶段二+ 切 Postgres + pgvector。
+//
+// SQLite 限制（已适配）：
+//   - 不支持 enum      → 枚举字段用 String + 应用层校验（见各模块 DTO/注释）
+//   - 不支持 Json 类型 → 结构化字段（attributes/aliases/content）用 String 存 JSON，
+//                        在 service 层 JSON.parse/stringify
+//
+// 表标注「激活阶段」：阶段一实现的逻辑仅覆盖标注为【阶段一】的表；
+// 其余为 schema-ready，为长程记忆（plan §6）与一致性引擎（plan §5）铺路。
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== 【阶段一激活】=====================
+
+model Novel {
+  id            Int      @id @default(autoincrement())
+  title         String
+  genre         String? // 题材：玄幻/都市/科幻...
+  synopsis      String? // 简介
+  worldviewText String? // 世界观自由文本（极简 Bible）
+  masterOutline String? // 总纲（plan §4 三级大纲）
+  bookSummary   String? // L4 全书摘要（<2000字，动态更新，plan §6.1）
+  meta          String   @default("{}") // JSON: { theme, trope, coreSetting, audience, templateName }
+  status        String   @default("draft") // draft | writing | completed | archived
+  wordCount     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  volumes  Volume[]
+  chapters Chapter[]
+  entities Entity[]
+  aiTasks  AiTask[]
+
+  @@map("novels")
+}
+
+model Volume {
+  id        Int      @id @default(autoincrement())
+  novelId   Int
+  title     String
+  order     Int      @default(0)
+  summary   String?
+  outline   String? // 卷纲（plan §4 三级大纲）
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  novel    Novel     @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  chapters Chapter[]
+
+  @@index([novelId])
+  @@map("volumes")
+}
+
+model Chapter {
+  id          Int      @id @default(autoincrement())
+  novelId     Int
+  volumeId    Int?
+  title       String
+  order       Int      @default(0)
+  status      String   @default("draft") // draft | writing | complete
+  content     String   @default("") // 正文（TipTap/ProseMirror HTML）
+  outlineText String? // 章纲（阶段一自由文本）
+  sceneConfig String   @default("{}") // JSON: {characterIds, locationIds, itemIds, goals}（运行时面板·本章配置）
+  wordCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  novel   Novel           @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  volume  Volume?         @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  summary ChapterSummary?
+  aiTasks AiTask[]
+  snapshots ChapterSnapshot[]
+
+  @@index([novelId])
+  @@index([volumeId])
+  @@map("chapters")
+}
+
+/// 统一实体抽象（plan §9）：角色 / 地点 / 组织 / 道具 / 能力体系 / 世界观
+model Entity {
+  id          Int      @id @default(autoincrement())
+  novelId     Int
+  type        String // character | location | organization | item | power_system | worldview
+  name        String
+  aliases     String   @default("[]") // JSON: string[]
+  attributes  String   @default("{}") // JSON: 角色卡字段化（性格/外貌/能力/背景...）
+  description String?
+  parentId    Int? // 地点父子层级（plan 深化方案 §2.5）
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  novel    Novel    @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  parent   Entity?  @relation("EntityHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Entity[] @relation("EntityHierarchy")
+
+  @@index([novelId, type])
+  @@map("entities")
+}
+
+/// L2 章节结构化摘要（plan §6）：{ events, characters, stateChanges }
+model ChapterSummary {
+  id        Int      @id @default(autoincrement())
+  chapterId Int      @unique
+  level     String   @default("L2") // L1 段落 | L2 章节 | L3 卷 | L4 全书
+  content   String   @default("{}") // JSON
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@map("chapter_summaries")
+}
+
+/// AI 调用日志（plan §9 ai_tasks）
+model AiTask {
+  id        Int      @id @default(autoincrement())
+  novelId   Int?
+  chapterId Int?
+  type      String // outline | chapter | continue | polish | summarize | chat
+  status    String   @default("pending") // pending | success | error
+  model     String?
+  tokensIn  Int      @default(0)
+  tokensOut Int      @default(0)
+  cached    Boolean  @default(false) // 是否命中语义缓存（plan §16）
+  error     String?
+  createdAt DateTime @default(now())
+
+  novel   Novel?   @relation(fields: [novelId], references: [id], onDelete: SetNull)
+  chapter Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([novelId])
+  @@map("ai_tasks")
+}
+
+/// 章节版本快照（plan §4 P2 版本管理：快照 + diff + 回滚）
+model ChapterSnapshot {
+  id        Int      @id @default(autoincrement())
+  chapterId Int
+  content   String
+  wordCount Int      @default(0)
+  reason    String? // manual | autosave | ai
+  createdAt DateTime @default(now())
+
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@index([chapterId])
+  @@map("chapter_snapshots")
+}
+
+// ===================== 【schema-ready：阶段二/三 激活逻辑】=====================
+// 本阶段仅建表占位，不暴露 CRUD。
+
+/// 时序关系（plan §5.3 L3、§9 relations）
+model Relation {
+  id               Int      @id @default(autoincrement())
+  novelId          Int
+  subjectId        Int
+  objectId         Int
+  type             String // 师徒/敌对/恋人/亲属...
+  validFromChapter Int?
+  validToChapter   Int?
+  attributes       String   @default("{}") // JSON
+  createdAt        DateTime @default(now())
+
+  @@index([novelId])
+  @@index([subjectId])
+  @@index([objectId])
+  @@map("relations")
+}
+
+/// 事件 / 时间线节点（plan §9 events）
+model Event {
+  id           Int      @id @default(autoincrement())
+  novelId      Int
+  chapterId    Int?
+  type         String
+  participants String   @default("[]") // JSON: entity id[]
+  location     String?
+  result       String?
+  storyTime    String?
+  causes       String   @default("[]") // JSON: event id[]（因果链）
+  createdAt    DateTime @default(now())
+
+  @@index([novelId])
+  @@map("events")
+}
+
+/// 实体时序状态快照（plan §9 states）
+model EntityState {
+  id        Int    @id @default(autoincrement())
+  entityId  Int
+  chapterId Int
+  attrName  String
+  value     String
+  evidence  String?
+
+  @@index([entityId])
+  @@index([chapterId])
+  @@map("entity_states")
+}
+
+/// 伏笔状态机（plan §4 P1 foreshadows）
+model Foreshadow {
+  id            Int      @id @default(autoincrement())
+  novelId       Int
+  title         String
+  setupChapter  Int?
+  payoffChapter Int?
+  status        String   @default("setup") // setup | paid_off | abandoned
+  description   String?
+  createdAt     DateTime @default(now())
+
+  @@index([novelId])
+  @@map("foreshadows")
+}
+
+/// 世界观硬规则（plan §3 Rules、§5.3 L2 规则引擎）
+model Rule {
+  id          Int      @id @default(autoincrement())
+  novelId     Int
+  name        String
+  description String
+  layer       String   @default("L2") // L1|L2|L3|L4
+  enabled     Boolean  @default(true)
+  weight      Float    @default(1.0) // L5 反馈学习调整的置信度权重
+
+  @@index([novelId])
+  @@map("rules")
+}
+
+/// 文风特征（plan §3 Style）
+model StyleProfile {
+  id          Int    @id @default(autoincrement())
+  novelId     Int    @unique
+  traits      String @default("{}") // JSON 文风特征
+  bannedWords String @default("[]") // JSON 禁用词
+  samples     String @default("[]") // JSON 样本片段
+
+  @@map("style_profiles")
+}
+
+/// 分层记忆（plan §6 L0-L4）；阶段二接 pgvector
+model Memory {
+  id        Int      @id @default(autoincrement())
+  novelId   Int
+  level     String // L0 | L1 | L2 | L3 | L4
+  sourceId  Int? // chapterId / paragraph index
+  content   String
+  embedding String? // 阶段二 pgvector；SQLite 阶段留空
+  createdAt DateTime @default(now())
+
+  @@index([novelId, level])
+  @@map("memories")
+}
+
+/// 信息流（plan 深化方案 §2.6 防剧透）：谁知道什么
+model Information {
+  id            Int      @id @default(autoincrement())
+  novelId       Int
+  content       String // 信息内容，如"林夜的真实身份"
+  importance    String   @default("normal") // core | normal | minor
+  knowers       String   @default("[]") // JSON: [{entityId, sinceChapter}]
+  sourceEventId Int? // 知晓途径（事件 id）
+  createdAt     DateTime @default(now())
+
+  @@index([novelId])
+  @@map("information")
+}
+
+/// 一致性问题清单（plan §5.5）
+model ConsistencyIssue {
+  id           Int      @id @default(autoincrement())
+  novelId      Int
+  layer        String // L1|L2|L3|L4
+  severity     String   @default("medium") // high|medium|low
+  type         String
+  entities     String   @default("[]") // JSON: string[]
+  location     String   @default("{}") // JSON: {chapterId, paragraph, charOffset}
+  evidence     String?
+  conflictWith String?
+  suggestion   String?
+  confidence   Float    @default(0)
+  autoFixable  Boolean  @default(false)
+  status       String   @default("open") // open|resolved|ignored|intentional
+  createdAt    DateTime @default(now())
+
+  @@index([novelId])
+  @@map("consistency_issues")
+}
+
+/// 作品设定模板（内置 + 用户自建，plan §4 P3 模板市场雏形）
+model NovelTemplate {
+  id                Int      @id @default(autoincrement())
+  name              String
+  genre             String? // 类型：玄幻/都市/科幻...
+  theme             String? // 题材：重生/末世/系统...
+  trope             String? // 叙事套路：废柴逆袭/扮猪吃虎...
+  coreSetting       String? // 核心设定/金手指
+  audience          String? // 受众：男频/女频/全年龄/青少年
+  synopsisHint      String? // 简介范本
+  worldviewSkeleton String? // 世界观骨架
+  isBuiltin         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  @@map("novel_templates")
+}
