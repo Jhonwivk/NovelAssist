@@ -29,6 +29,7 @@ export interface ChapterListItem {
   order: number;
   status: string;
   wordCount: number;
+  volumeId?: number | null;
   updatedAt: string;
 }
 

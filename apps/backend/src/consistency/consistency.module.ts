@@ -7,5 +7,6 @@ import { AiModule } from '../ai/ai.module';
   imports: [AiModule],
   controllers: [ConsistencyController],
   providers: [ConsistencyService],
+  exports: [ConsistencyService],
 })
 export class ConsistencyModule {}

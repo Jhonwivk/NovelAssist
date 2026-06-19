@@ -1,16 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api';
-import { Button, Label, Modal, TextArea, TextInput } from './ui';
+import { Button, Label, Modal, Select, TextArea, TextInput, toast } from './ui';
 
 type Plan = { title: string; outline: string };
 
 export function BatchChaptersModal({ novelId, open, onClose }: { novelId: number; open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const [count, setCount] = useState(10);
+  const [volumeId, setVolumeId] = useState<number | null>(null);
   const [instruction, setInstruction] = useState('');
+  const { data: novel } = useQuery({ queryKey: ['novel', novelId], queryFn: () => apiClient.getNovel(novelId) });
+  const volumes = [...(novel?.volumes ?? [])].sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
   const [plan, setPlan] = useState<Plan[] | null>(null);
   const [busy, setBusy] = useState('');
   const [progress, setProgress] = useState<{ done: number; total: number; msg: string } | null>(null);
@@ -23,8 +26,10 @@ export function BatchChaptersModal({ novelId, open, onClose }: { novelId: number
     try {
       const r = await apiClient.aiOutlineChapters(novelId, count, instruction || undefined);
       const chapters: Plan[] = r?.result?.chapters ?? [];
-      if (!chapters.length) throw new Error('AI 未返回章节计划');
+      const dropped: string[] = r?.result?.dropped ?? [];
+      if (!chapters.length) throw new Error('AI 未返回有效章节计划（可能全部与已写章节重复，请调整要求或减少数量）');
       setPlan(chapters.map((c) => ({ title: c.title ?? '', outline: c.outline ?? '' })));
+      if (dropped.length) toast.message(`已自动剔除 ${dropped.length} 条与已写章节重复的计划`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : '生成失败');
     } finally {
@@ -46,24 +51,31 @@ export function BatchChaptersModal({ novelId, open, onClose }: { novelId: number
     const createdIds: number[] = [];
     try {
       for (let i = 0; i < plan.length; i++) {
-        const c = await apiClient.createChapter(novelId, { title: plan[i].title.trim() || `第${i + 1}章`, outlineText: plan[i].outline || undefined });
+        const c = await apiClient.createChapter(novelId, { title: plan[i].title.trim() || `第${i + 1}章`, outlineText: plan[i].outline || undefined, volumeId: volumeId ?? undefined });
         createdIds.push(c.id);
         setProgress({ done: i + 1, total: plan.length, msg: `已创建 ${i + 1}/${plan.length}` });
       }
 
+      let flagged = 0;
       if (autoContent) {
         for (let i = 0; i < createdIds.length; i++) {
           setProgress({ done: i, total: createdIds.length, msg: `生成正文 ${i}/${createdIds.length}：${plan[i]?.title ?? ''}` });
-          await apiClient.generateChapterContent(createdIds[i]);
+          const r = await apiClient.generateChapterContent(createdIds[i]);
+          if (r?.gate && !r.gate.passed) flagged += 1;
         }
-        setProgress({ done: createdIds.length, total: createdIds.length, msg: '全部完成' });
+        setProgress({
+          done: createdIds.length,
+          total: createdIds.length,
+          msg: flagged ? `全部完成（${flagged} 章被门禁标记，需复查）` : '全部完成，门禁通过',
+        });
       }
 
       qc.invalidateQueries({ queryKey: ['novel', novelId] });
+      if (flagged) toast.warning(`${flagged} 章存在高危一致性问题或与上一章情节重叠，已标记「待修复」`);
       setTimeout(() => {
         reset();
         onClose();
-      }, 600);
+      }, flagged ? 1500 : 600);
     } catch (e) {
       setErr((e instanceof Error ? e.message : '失败') + `（已完成 ${createdIds.length}/${plan.length}）`);
       qc.invalidateQueries({ queryKey: ['novel', novelId] });
@@ -89,8 +101,12 @@ export function BatchChaptersModal({ novelId, open, onClose }: { novelId: number
               <Label>章节数量</Label>
               <TextInput type="number" min={1} max={50} value={count} onChange={(e) => setCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} className="w-24" />
             </div>
-            <Button onClick={generatePlan} disabled={!!busy}>{busy === 'plan' ? '生成计划中…' : '生成章节计划'}</Button>
+            <div className="min-w-[10rem] flex-1">
+              <Label>归入卷（可选）</Label>
+              <Select value={volumeId ?? ''} onChange={(v) => setVolumeId(v === '' ? null : Number(v))} placeholder="未分卷" options={[{ value: '', label: '未分卷' }, ...volumes.map((v: any) => ({ value: v.id, label: v.title }))]} />
+            </div>
           </div>
+          <Button onClick={generatePlan} disabled={!!busy}>{busy === 'plan' ? '生成计划中…' : '生成章节计划'}</Button>
           <div>
             <Label>额外要求（可选）</Label>
             <TextArea rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} placeholder="如：节奏快一些、每 3 章一个小高潮" />

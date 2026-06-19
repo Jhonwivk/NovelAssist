@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, MaxLength, Min, ValidateIf } from 'class-validator';
 
 export class CreateChapterDto {
   @IsString()
@@ -6,8 +6,9 @@ export class CreateChapterDto {
   title: string;
 
   @IsOptional()
+  @ValidateIf((o) => o.volumeId !== null)
   @IsInt()
-  volumeId?: number;
+  volumeId?: number | null;
 
   @IsOptional()
   @IsInt()
@@ -30,8 +31,9 @@ export class UpdateChapterDto {
   title?: string;
 
   @IsOptional()
+  @ValidateIf((o) => o.volumeId !== null)
   @IsInt()
-  volumeId?: number;
+  volumeId?: number | null;
 
   @IsOptional()
   @IsInt()

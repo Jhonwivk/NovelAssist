@@ -17,6 +17,13 @@ export class MemoryController {
     return this.memory.refreshBook(novelId);
   }
 
+  /** 刷新某卷 L3 摘要（volumeId 省略则按全作品聚合）。 */
+  @Post('volume/:novelId')
+  refreshVolume(@Param('novelId', ParseIntPipe) novelId: number, @Query('volumeId') volumeId?: string) {
+    const vid = volumeId ? Number(volumeId) : null;
+    return this.memory.refreshVolume(novelId, vid);
+  }
+
   /** 调试：查看组装后的上下文（plan §6.2）。 */
   @Get('context')
   context(@Query('novelId', ParseIntPipe) novelId: number, @Query('chapterId') chapterId?: string) {

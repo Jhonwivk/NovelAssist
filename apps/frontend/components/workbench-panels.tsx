@@ -2,110 +2,169 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Send } from 'lucide-react';
+import { ArrowUpRight, Bot, Check, Copy, EyeOff, Library, Plus, Send, ShieldCheck, Sparkles, Wrench } from 'lucide-react';
 import { apiClient, streamSse } from '@/lib/api';
-import { Avatar, Button, TextArea, TextInput } from './ui';
+import { Avatar, Badge, Button, Card, EmptyState, SegmentedControl, Select, Spinner, TextArea, TextInput, Tooltip, toast } from './ui';
+import { IssueCard, SEV_META, chapterIdOf } from './issue-card';
 
 // =================== 一致性面板 ===================
+
 export function ConsistencyPanel({ novelId }: { novelId: number }) {
   const qc = useQueryClient();
+  const [analyzingAll, setAnalyzingAll] = useState(false);
   const { data: issues, isLoading } = useQuery({
     queryKey: ['issues', novelId],
     queryFn: () => apiClient.listIssues(novelId),
+    refetchInterval: analyzingAll ? 3000 : false,
   });
   const { data: chapters } = useQuery({
     queryKey: ['novel', novelId],
     queryFn: () => apiClient.getNovel(novelId),
   });
+  const analyzeAll = useMutation({
+    mutationFn: () => apiClient.analyzeAll(novelId),
+    onMutate: () => setAnalyzingAll(true),
+    onSuccess: (r) => { setAnalyzingAll(false); qc.invalidateQueries({ queryKey: ['issues', novelId] }); qc.invalidateQueries({ queryKey: ['bible', novelId] }); toast.success(`已分析 ${r.analyzed}/${r.total} 章${r.failed ? `（${r.failed} 章失败）` : ''}`); },
+    onError: () => { setAnalyzingAll(false); toast.error('分析失败'); },
+  });
   const check = useMutation({
     mutationFn: (cid: number) => apiClient.consistencyCheck(cid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['issues', novelId] }),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ['issues', novelId] }); toast.success(`检查完成，发现 ${Array.isArray(r) ? r.length : 0} 个问题`); },
+    onError: () => toast.error('检查失败'),
   });
   const resolve = useMutation({
     mutationFn: ({ id, status }: { id: number; status: 'resolved' | 'ignored' | 'intentional' }) =>
       apiClient.resolveIssue(id, status),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['issues', novelId] }),
   });
+  const fix = useMutation({
+    mutationFn: (id: number) => apiClient.fixIssue(id),
+    onSuccess: (r: any) => { qc.invalidateQueries({ queryKey: ['issues', novelId] }); r?.success ? toast.success(r.message) : toast.error(r?.message ?? '修复失败'); },
+    onError: () => toast.error('修复请求失败'),
+  });
 
-  const latest = chapters?.chapters?.[(chapters.chapters?.length ?? 0) - 1];
+  const chapterList = chapters?.chapters ?? [];
+  const latest = chapterList[chapterList.length - 1];
+
+  const open = (issues ?? []).filter((i) => i.status === 'open')
+    .sort((a, b) => (SEV_META[a.severity]?.rank ?? 9) - (SEV_META[b.severity]?.rank ?? 9));
+  const counts = { high: 0, medium: 0, low: 0 } as Record<string, number>;
+  for (const i of open) counts[i.severity] = (counts[i.severity] ?? 0) + 1;
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="font-semibold">一致性检查（L1-L5）</h3>
-        <Button
-          variant="secondary"
-          disabled={!latest || check.isPending}
-          onClick={() => latest && check.mutate(latest.id)}
-        >
-          {check.isPending ? '检查中…' : `检查最新章`}
-        </Button>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="flex items-center gap-2 font-semibold"><ShieldCheck size={16} className="text-primary" />一致性检查</h3>
+          <span className="text-xxs text-fg-faint">L1 抽取 · L2 规则 · L3 图谱 · L4 语义 · L5 反馈</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button variant="secondary" size="sm" icon={ShieldCheck} loading={check.isPending} disabled={!latest || check.isPending || analyzingAll} onClick={() => latest && check.mutate(latest.id)}>
+            {check.isPending ? '检查中…' : '检查最新章'}
+          </Button>
+          <Button variant="secondary" size="sm" icon={Library} loading={analyzingAll} disabled={analyzingAll || chapterList.length === 0} onClick={() => analyzeAll.mutate()}>
+            {analyzingAll ? `分析全书…（${open.length} 问题）` : '分析全书'}
+          </Button>
+        </div>
       </div>
-      {check.data && <p className="mb-2 text-xs text-fg-muted">本轮发现 {check.data.length} 个问题</p>}
-      {isLoading && <p className="text-sm text-fg-muted">加载…</p>}
-      <div className="space-y-2">
-        {(issues ?? []).filter((i) => i.status === 'open').map((i) => (
-          <div key={i.id} className="rounded-md border border-border bg-surface p-3 text-sm">
-            <div className="flex items-center gap-2">
-              <span className={`rounded px-1.5 py-0.5 text-xs text-white ${i.severity === 'high' ? 'bg-danger' : i.severity === 'medium' ? 'bg-warn' : 'bg-fg-faint'}`}>{i.severity}</span>
-              <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs">{i.layer}</span>
-              <span className="font-medium">{i.type}</span>
+
+      {analyzingAll && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-primary/30 bg-primary-soft/40 px-3 py-2 text-xs text-fg">
+          <Spinner size={13} /> 正在逐章抽取设定 / 一致性 / 摘要（已发现 {open.length} 个问题）。切到「设定库 / 知识图谱」可实时看到数据增长。
+        </div>
+      )}
+
+      {/* 概览统计 */}
+      {open.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {(['high', 'medium', 'low'] as const).map((s) => (
+            <div key={s} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1 text-xs">
+              <span className={`h-2 w-2 rounded-full ${s === 'high' ? 'bg-danger' : s === 'medium' ? 'bg-warn' : 'bg-fg-faint'}`} />
+              <span className="text-fg-muted">{SEV_META[s].label}</span>
+              <span className="font-semibold tabular-nums">{counts[s] ?? 0}</span>
             </div>
-            {(JSON.parse(i.entities || '[]') as string[]).length > 0 && (
-              <p className="mt-1 text-xs text-fg-muted">涉及：{(JSON.parse(i.entities) as string[]).join('、')}</p>
-            )}
-            {i.evidence && <p className="mt-1 text-xs">证据：{i.evidence}</p>}
-            {i.suggestion && <p className="mt-1 text-xs text-accent">建议：{i.suggestion}</p>}
-            <div className="mt-2 flex gap-1">
-              <Button variant="secondary" onClick={() => resolve.mutate({ id: i.id, status: 'resolved' })}>已修正</Button>
-              <Button variant="ghost" onClick={() => resolve.mutate({ id: i.id, status: 'intentional' })}>有意为之</Button>
-              <Button variant="ghost" onClick={() => resolve.mutate({ id: i.id, status: 'ignored' })}>忽略此类</Button>
-            </div>
-          </div>
-        ))}
-        {!isLoading && (issues ?? []).filter((i) => i.status === 'open').length === 0 && (
-          <p className="text-sm text-fg-muted">暂无未解决问题。写完一章后点「检查最新章」。</p>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {isLoading && <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={14} />加载中…</div>}
+
+      {!isLoading && open.length === 0 ? (
+        <EmptyState icon={ShieldCheck} title="暂无未解决问题" desc="写完一章后点「检查最新章」，引擎将逐层扫描事实/规则/图谱/语义冲突。" />
+      ) : (
+        <div className="space-y-2.5">
+          {open.map((i) => {
+            const cid = chapterIdOf(i.location);
+            return (
+              <IssueCard key={i.id} issue={i} chapterList={chapterList}
+                actions={<>
+                  {i.evidence && i.suggestion && (
+                    <Button size="sm" icon={Wrench} loading={fix.isPending && fix.variables === i.id} onClick={() => fix.mutate(i.id)}>AI 修复</Button>
+                  )}
+                  {cid != null && (
+                    <a href={`/novels/${novelId}/chapters/${cid}`} className="inline-flex">
+                      <Button size="sm" variant="ghost" icon={ArrowUpRight}>跳转编辑</Button>
+                    </a>
+                  )}
+                  <Button size="sm" variant="secondary" icon={Check} loading={resolve.isPending && resolve.variables?.id === i.id} onClick={() => resolve.mutate({ id: i.id, status: 'resolved' })}>已修正</Button>
+                  <Tooltip label="情节需要，不计入假正例"><Button size="sm" variant="ghost" onClick={() => resolve.mutate({ id: i.id, status: 'intentional' })}>有意为之</Button></Tooltip>
+                  <Tooltip label="降低此类规则权重"><Button size="sm" variant="ghost" icon={EyeOff} onClick={() => resolve.mutate({ id: i.id, status: 'ignored' })}>忽略此类</Button></Tooltip>
+                </>}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 // =================== 灵感工具 ===================
 export function IdeaTools({ novelId }: { novelId: number }) {
-  const [tab, setTab] = useState<'idea' | 'title' | 'synopsis' | 'hook' | 'outline'>('idea');
+  const qc = useQueryClient();
+  const [tab, setTab] = useState<'idea' | 'title' | 'synopsis' | 'hook'>('idea');
   const [genre, setGenre] = useState('');
   const [keywords, setKeywords] = useState('');
   const [out, setOut] = useState('');
   const [busy, setBusy] = useState(false);
+  const { data: novel } = useQuery({ queryKey: ['novel', novelId], queryFn: () => apiClient.getNovel(novelId) });
+  const update = useMutation({ mutationFn: (data: any) => apiClient.updateNovel(novelId, data), onSuccess: () => qc.invalidateQueries({ queryKey: ['novel', novelId] }) });
 
   async function run() {
-    setBusy(true);
-    setOut('');
+    setBusy(true); setOut('');
     try {
       let r: any;
       if (tab === 'idea') r = await apiClient.aiIdea({ genre, keywords });
       else if (tab === 'title') r = await apiClient.aiTitle(novelId);
       else if (tab === 'synopsis') r = await apiClient.aiSynopsis(novelId);
-      else if (tab === 'hook') r = await apiClient.aiHook(novelId);
-      else r = await apiClient.aiOutline(novelId);
-      setOut(r?.content ?? r?.summary ?? JSON.stringify(r, null, 2));
-    } catch (e) {
-      setOut('失败：' + (e instanceof Error ? e.message : ''));
-    } finally {
-      setBusy(false);
-    }
+      else r = await apiClient.aiHook(novelId);
+      setOut(r?.content ?? r?.summary ?? '');
+    } catch { toast.error('生成失败'); } finally { setBusy(false); }
   }
 
-  const tabs: [typeof tab, string][] = [['idea', '灵感'], ['title', '书名'], ['synopsis', '简介'], ['hook', '钩子'], ['outline', '大纲']];
+  function copyOut() { navigator.clipboard?.writeText(out); toast.success('已复制到剪贴板'); }
+  function applyTitle(t: string) { update.mutate({ title: t.trim() }); toast.success('已设为作品标题'); }
+  function applySynopsis() { update.mutate({ synopsis: out.trim() }); toast.success('已设为简介'); }
+  function appendOutline() { const cur = novel?.masterOutline ?? ''; update.mutate({ masterOutline: cur + (cur ? '\n\n' : '') + '【开篇钩子】\n' + out.trim() }); toast.success('已加入总纲'); }
+
+  // 书名候选：去编号/书名号，逐条渲染
+  const candidates =
+    tab === 'title'
+      ? out.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^[\d一二三四五六七八九十]+[.、)）\s]+/, '').replace(/^《|》$/g, '').trim()).filter(Boolean)
+      : [];
 
   return (
     <div>
-      <h3 className="mb-3 font-semibold">灵感与文案工具</h3>
-      <div className="mb-3 flex flex-wrap gap-1">
-        {tabs.map(([t, label]) => (
-          <Button key={t} variant={tab === t ? 'primary' : 'secondary'} onClick={() => setTab(t)}>{label}</Button>
-        ))}
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="font-semibold">灵感与文案</h3>
+        <span className="text-xxs text-fg-faint">生成后可一键应用回作品</span>
+      </div>
+      <div className="mb-3">
+        <SegmentedControl
+          value={tab}
+          onChange={(v) => setTab(v)}
+          options={[{ value: 'idea', label: '灵感' }, { value: 'title', label: '书名' }, { value: 'synopsis', label: '简介' }, { value: 'hook', label: '钩子' }]}
+        />
       </div>
       {tab === 'idea' && (
         <div className="mb-2 grid grid-cols-2 gap-2">
@@ -113,8 +172,30 @@ export function IdeaTools({ novelId }: { novelId: number }) {
           <TextInput value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="关键词，逗号分隔" />
         </div>
       )}
-      <Button onClick={run} disabled={busy} className="mb-2">{busy ? '生成中…' : '生成'}</Button>
-      {out && <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-surface p-3 text-sm">{out}</pre>}
+      <Button onClick={run} loading={busy} icon={Sparkles} className="mb-3">{busy ? '生成中…' : '生成'}</Button>
+
+      {out && (
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" icon={Copy} onClick={copyOut}>复制</Button>
+            {tab === 'synopsis' && <Button size="sm" icon={Check} loading={update.isPending} onClick={applySynopsis}>设为简介</Button>}
+            {tab === 'hook' && <Button size="sm" icon={Plus} loading={update.isPending} onClick={appendOutline}>加入总纲</Button>}
+          </div>
+          {tab === 'title' ? (
+            <div className="space-y-1.5">
+              {candidates.map((c, i) => (
+                <div key={i} className="flex items-center justify-between rounded-md border border-border bg-surface px-3 py-2">
+                  <span className="text-sm font-medium">{c}</span>
+                  <Button size="sm" variant="ghost" icon={Check} onClick={() => applyTitle(c)}>用这个</Button>
+                </div>
+              ))}
+              {candidates.length === 0 && <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md bg-surface-2 p-3 text-sm">{out}</pre>}
+            </div>
+          ) : (
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-surface-2 p-3 text-sm">{out}</pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -192,6 +273,11 @@ export function AiChat({ novelId }: { novelId: number }) {
 export function CostPanel({ novelId }: { novelId: number }) {
   const { data } = useQuery({ queryKey: ['cost', novelId], queryFn: () => apiClient.costStats(novelId), refetchInterval: 15000 });
   const t = data?.total;
+  const byType = data?.byType ?? [];
+  const maxTok = Math.max(...byType.map((b: any) => b.tokensIn + b.tokensOut), 1);
+  const totalTok = (t?.tokensIn ?? 0) + (t?.tokensOut ?? 0) || 1;
+  const inPct = ((t?.tokensIn ?? 0) / totalTok) * 100;
+
   return (
     <div>
       <h3 className="mb-3 font-semibold">Token 成本看板</h3>
@@ -203,16 +289,42 @@ export function CostPanel({ novelId }: { novelId: number }) {
         <Stat label="错误" v={t?.errors ?? 0} />
         <Stat label="估算成本(¥)" v={t?.estCostYuan ?? 0} />
       </div>
-      {data?.byType && data.byType.length > 0 && (
-        <div className="mt-3">
-          <p className="mb-1 text-xs text-fg-muted">按任务类型</p>
-          <div className="space-y-1">
-            {data.byType.map((b: any) => (
-              <div key={b.key} className="flex justify-between text-xs">
-                <span>{b.key}</span>
-                <span className="text-fg-muted">{b.calls} 次 · 缓存 {b.cached} · {b.tokensIn + b.tokensOut} tok</span>
-              </div>
-            ))}
+
+      {/* 输入/输出比例条 */}
+      {totalTok > 1 && (
+        <div className="mt-4">
+          <div className="mb-1 text-overline">输入 / 输出</div>
+          <div className="flex h-3 overflow-hidden rounded-full">
+            <div className="bg-primary transition-all" style={{ width: `${inPct}%` }} title={`输入 ${t?.tokensIn ?? 0}`} />
+            <div className="bg-accent transition-all" style={{ width: `${100 - inPct}%` }} title={`输出 ${t?.tokensOut ?? 0}`} />
+          </div>
+          <div className="mt-1 flex justify-between text-xxs text-fg-faint">
+            <span><span className="inline-block h-2 w-2 rounded-full bg-primary" /> 输入 {((t?.tokensIn ?? 0)).toLocaleString()}</span>
+            <span><span className="inline-block h-2 w-2 rounded-full bg-accent" /> 输出 {((t?.tokensOut ?? 0)).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* 按任务类型柱状图 */}
+      {byType.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 text-overline">按任务类型</div>
+          <div className="space-y-2.5">
+            {byType.map((b: any) => {
+              const tok = b.tokensIn + b.tokensOut;
+              const pct = (tok / maxTok) * 100;
+              return (
+                <div key={b.key}>
+                  <div className="mb-0.5 flex justify-between text-xs">
+                    <span className="font-medium">{b.key}</span>
+                    <span className="text-fg-faint">{b.calls} 次 · {tok.toLocaleString()} tok{b.cached > 0 && ` · 缓存 ${b.cached}`}</span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-surface-2">
+                    <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -360,7 +472,15 @@ export function LocationPanel({ novelId }: { novelId: number }) {
       </div>
       <div className="mt-3 space-y-2 border-t border-border pt-3">
         <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="地点名" />
-        <TextInput value={parentId} onChange={(e) => setParentId(e.target.value)} placeholder="父级地点 id（可选，留空为顶级）" className="text-xs" />
+        <div>
+          <div className="mb-1 text-xs text-fg-muted">父级地点（可选）</div>
+          <Select<string>
+            value={parentId}
+            onChange={(v) => setParentId(v)}
+            placeholder="顶级（无父级）"
+            options={locations.map((l: any) => ({ value: String(l.id), label: l.name }))}
+          />
+        </div>
         <TextArea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="描述 / 进入限制" />
         <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>添加地点</Button>
       </div>

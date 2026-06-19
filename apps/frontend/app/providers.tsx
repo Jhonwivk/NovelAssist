@@ -4,8 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import { useState, type ReactNode } from 'react';
 import { ConfirmProvider } from '@/components/ui';
+import { useHtmlTheme } from '@/lib/use-html-theme';
 
 export function Providers({ children }: { children: ReactNode }) {
+  const theme = useHtmlTheme();
   const [client] = useState(
     () =>
       new QueryClient({
@@ -18,7 +20,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={client}>
       <ConfirmProvider>{children}</ConfirmProvider>
       <Toaster
-        theme="dark"
+        theme={theme}
         position="bottom-right"
         toastOptions={{
           style: {

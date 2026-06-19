@@ -9,12 +9,13 @@ import CharacterCount from '@tiptap/extension-character-count';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle, BookOpen, Bot, Check, ChevronDown, Circle, Database, Disc,
-  FileSearch, History, Info, Languages, ListChecks, Package, PenLine, Play,
+  FileSearch, History, Info, Languages, Layers, ListChecks, Package, PenLine, Play,
   RotateCw, Save, Search, ShieldCheck, Sparkles, Wand2, Wrench,
 } from 'lucide-react';
 import { apiClient, streamSse } from '@/lib/api';
 import type { Chapter } from '@/lib/types';
 import { Avatar, Badge, Button, Card, Chip, Disclosure, EmptyState, Label, Spinner, Tabs, TextArea, TextInput, Tooltip, toast, useConfirm } from './ui';
+import { IssueCard } from './issue-card';
 import { ThemeToggle } from './theme-toggle';
 import { IssueMarks, issueMarksKey } from './editor-marks';
 
@@ -65,7 +66,9 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
   const [selToolbar, setSelToolbar] = useState<{ top: number; left: number } | null>(null);
 
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const analyzeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const buffer = useRef('');
+  const [analyzing, setAnalyzing] = useState(false);
 
   const save = useMutation({
     mutationFn: (data: Partial<Chapter>) => apiClient.saveChapter(chapter.id, data),
@@ -146,6 +149,13 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
     setSaveState('saving');
     clearTimeout(timer.current);
     timer.current = setTimeout(() => doSave(content), 1500);
+    // 30s 空闲后自动后台分析（plan §5.4 承诺的"保存后自动异步触发"）
+    clearTimeout(analyzeTimer.current);
+    analyzeTimer.current = setTimeout(async () => {
+      setAnalyzing(true);
+      try { await apiClient.analyzeChapter(chapter.id); qc.invalidateQueries({ queryKey: ['issues', novelId] }); } catch {}
+      finally { setAnalyzing(false); }
+    }, 30000);
   }
   function flushSave(content: string) {
     clearTimeout(timer.current);
@@ -165,6 +175,24 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
   }
 
   // ---- AI 流式 ----
+  /** 生成/续写完成后：登记一次 undo、保存、并后台跑一致性分析（刷新门禁/问题）。 */
+  async function afterGenerate() {
+    try {
+      // 流式过程中每 token 用 setContent(…, false)（不入历史），此处一次性登记，恢复 Ctrl+Z 到生成前。
+      editor?.commands.setContent(textToHtml(buffer.current), true);
+    } catch { /* ignore */ }
+    flushSave(editor?.getHTML() ?? '');
+    setAiMsg('生成完成，已填入编辑器');
+    setAnalyzing(true);
+    try {
+      await apiClient.analyzeChapter(chapter.id); // fire-and-forget：后台 L1+一致性+摘要
+      qc.invalidateQueries({ queryKey: ['issues', novelId] });
+      refetchChanges();
+      toast.message('已生成，正在后台分析一致性…');
+    } catch { /* 静默：生成已成功 */ }
+    finally { setAnalyzing(false); }
+  }
+
   async function generate() {
     if (!editor || aiBusy) return;
     setAiBusy(true); setAiMsg('正在生成本章正文…（含运行时状态）');
@@ -172,9 +200,9 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
     await streamSse('/ai/chapter', { novelId, chapterId: chapter.id, instruction: instruction || undefined, targetWords: undefined }, {
       onToken: (t) => { buffer.current += t; editor.commands.setContent(textToHtml(buffer.current), false); },
       onError: (m) => setAiMsg('生成失败：' + m),
-      onDone: () => setAiMsg('生成完成，已填入编辑器'),
+      onDone: () => afterGenerate(),
     });
-    editor.setEditable(true); setAiBusy(false); flushSave(editor.getHTML());
+    editor.setEditable(true); setAiBusy(false);
   }
   async function continueWriting() {
     if (!editor || aiBusy) return;
@@ -183,9 +211,9 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
     await streamSse('/ai/continue', { novelId, chapterId: chapter.id, content: buffer.current, instruction: instruction || undefined }, {
       onToken: (t) => { buffer.current += t; editor.commands.setContent(textToHtml(buffer.current), false); },
       onError: (m) => setAiMsg('续写失败：' + m),
-      onDone: () => setAiMsg('续写完成'),
+      onDone: () => afterGenerate(),
     });
-    editor.setEditable(true); setAiBusy(false); flushSave(editor.getHTML());
+    editor.setEditable(true); setAiBusy(false);
   }
   async function selectionOp(kind: 'polish' | 'expand' | 'rewrite' | 'viewpoint') {
     if (!editor || aiBusy) return;
@@ -217,6 +245,18 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
     catch (e) { setAiMsg('失败：' + (e instanceof Error ? e.message : '')); }
     finally { setAiBusy(false); }
   }
+  async function humanize() {
+    if (aiBusy) return;
+    setAiBusy(true); setAiMsg('去AI味润色中（两遍）…');
+    try {
+      await apiClient.humanize(chapter.id);
+      setAiMsg('已去AI味并更新正文（改前已存快照可回滚）');
+      qc.invalidateQueries({ queryKey: ['chapter', chapter.id] });
+      qc.invalidateQueries({ queryKey: ['snapshots', chapter.id] });
+      toast.success('去AI味完成');
+    } catch (e) { setAiMsg('失败：' + (e instanceof Error ? e.message : '')); }
+    finally { setAiBusy(false); }
+  }
   async function consistencyCheck() {
     if (aiBusy) return;
     setAiBusy(true); setAiMsg('一致性检查中（L1→L4）…');
@@ -235,6 +275,9 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
     catch (e) { setAiMsg('快照失败'); }
   }
   const rollback = useMutation({ mutationFn: (sid: number) => apiClient.rollback(chapter.id, sid), onSuccess: () => qc.invalidateQueries({ queryKey: ['chapter', chapter.id] }) });
+  // 本章问题的修复/反馈（与一致性面板共用 IssueCard）
+  const resolveIssue = useMutation({ mutationFn: ({ id, status }: { id: number; status: 'resolved' | 'ignored' | 'intentional' }) => apiClient.resolveIssue(id, status), onSuccess: () => { qc.invalidateQueries({ queryKey: ['issues', novelId] }); qc.invalidateQueries({ queryKey: ['changes', chapter.id] }); } });
+  const fixIssue = useMutation({ mutationFn: (id: number) => apiClient.fixIssue(id), onSuccess: (r: any) => { qc.invalidateQueries({ queryKey: ['issues', novelId] }); qc.invalidateQueries({ queryKey: ['chapter', chapter.id] }); r?.success ? toast.success(r.message) : toast.error(r?.message ?? '修复失败'); }, onError: () => toast.error('修复请求失败') });
 
   function updateScene(next: { characterIds: number[]; goals: string }) {
     setSceneCfg(next);
@@ -267,6 +310,7 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
           {saveState === 'saved' && <Check size={12} />}
           {saveLabel}
         </span>
+        {analyzing && <span className="inline-flex items-center gap-1 text-xxs text-primary"><Spinner size={11} />后台分析</span>}
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
         </div>
@@ -280,22 +324,30 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
             <a href={`/novels/${novelId}`} className="text-fg-faint transition-app hover:text-primary"><PenLine size={14} /></a>
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-2 pb-3">
-            {chapters.map((c) => {
-              const cur = c.id === chapter.id;
-              const Ic = statusIcon(c.status, (issuesByChapter.get(c.id) ?? 0) > 0);
-              const issueCount = issuesByChapter.get(c.id) ?? 0;
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => router.push(`/novels/${novelId}/chapters/${c.id}`)}
-                  className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-app ${cur ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg'}`}
-                >
-                  <Ic size={14} strokeWidth={2} className={issueCount > 0 ? 'text-danger' : c.status === 'complete' ? 'text-accent' : 'text-fg-faint'} />
-                  <span className="flex-1 truncate">{c.title}</span>
-                  <span className="text-xxs text-fg-faint opacity-0 group-hover:opacity-100">{c.wordCount}</span>
-                </button>
-              );
-            })}
+            {(() => {
+              const vols = [...(novel?.volumes ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+              const groups = [
+                ...vols.map((v) => ({ v, list: chapters.filter((c) => c.volumeId === v.id) })),
+                { v: null as any, list: chapters.filter((c) => c.volumeId == null) },
+              ];
+              return groups.map((g, gi) => (
+                <div key={g.v?.id ?? `nv${gi}`} className="mb-2">
+                  <div className="flex items-center gap-1.5 px-1 py-1 text-overline"><Layers size={11} className="text-primary" />{g.v?.title ?? '未分卷'}</div>
+                  {g.list.length === 0 ? <div className="px-2 py-0.5 text-xxs text-fg-faint">—</div> : g.list.map((c) => {
+                    const cur = c.id === chapter.id;
+                    const Ic = statusIcon(c.status, (issuesByChapter.get(c.id) ?? 0) > 0);
+                    const issueCount = issuesByChapter.get(c.id) ?? 0;
+                    return (
+                      <button key={c.id} onClick={() => router.push(`/novels/${novelId}/chapters/${c.id}`)} className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-app ${cur ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg'}`}>
+                        <Ic size={14} strokeWidth={2} className={issueCount > 0 ? 'text-danger' : c.status === 'complete' ? 'text-accent' : 'text-fg-faint'} />
+                        <span className="flex-1 truncate">{c.title}</span>
+                        <span className="text-xxs text-fg-faint opacity-0 group-hover:opacity-100">{c.wordCount}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ));
+            })()}
           </div>
         </aside>
 
@@ -357,7 +409,9 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
                   <Button variant="secondary" onClick={summarize} disabled={aiBusy} icon={FileSearch} size="sm">摘要</Button>
                   <Button variant="secondary" onClick={consistencyCheck} disabled={aiBusy} icon={ShieldCheck} size="sm">查问题</Button>
                 </div>
+                <Button variant="ghost" onClick={humanize} disabled={aiBusy} loading={aiBusy} icon={Wand2} size="sm" className="w-full">去AI味润色（两遍，可回滚）</Button>
                 <Button variant="ghost" onClick={snapshot} disabled={aiBusy} icon={Save} size="sm" className="w-full">存为版本快照</Button>
+                <Button variant="ghost" disabled={aiBusy} icon={Check} size="sm" className="w-full" onClick={async () => { await save.mutateAsync({ status: 'complete' }); setAnalyzing(true); try { await apiClient.analyzeChapter(chapter.id); qc.invalidateQueries({ queryKey: ['issues', novelId] }); toast.success('已完成并自动分析'); } catch {} finally { setAnalyzing(false); } }}>✓ 完成本章（自动分析）</Button>
                 {aiMsg && <p className="text-xs text-fg-muted">{aiMsg}</p>}
                 {polishPreview && <pre className="max-h-40 overflow-auto rounded-md bg-surface-2 p-2 text-xs whitespace-pre-wrap">{polishPreview}</pre>}
                 {(snapshots ?? []).length > 0 && (
@@ -409,14 +463,16 @@ export function ChapterEditor({ chapter, novelId }: { chapter: Chapter; novelId:
               <div className="space-y-2 text-xs">
                 <Button variant="secondary" onClick={analyzeChapter} disabled={aiBusy} loading={aiBusy} icon={ListChecks} className="w-full">分析本章</Button>
                 {changes?.analyzed && <p className="text-fg-muted">状态 {changes.counts.states} · 事件 {changes.counts.events} · 物品 {changes.counts.items} · 信息流 {changes.counts.info} · 问题 {changes.counts.issues}</p>}
-                {(changes?.issues ?? []).filter((x: any) => x.status === 'open').length === 0 && changes?.analyzed && (
+                {(issues ?? []).filter((x: any) => x.status === 'open' && (x.location ?? '').includes(`"chapterId":${chapter.id}`)).length === 0 && changes?.analyzed && (
                   <div className="rounded-md border border-accent/30 bg-accent/10 p-2 text-accent">本章无未解决问题</div>
                 )}
-                {(changes?.issues ?? []).filter((x: any) => x.status === 'open').map((is: any) => (
-                  <Card key={is.id} variant={is.severity === 'high' ? 'outline' : 'sunken'} className={`p-2 ${is.severity === 'high' ? 'border-danger/40' : is.severity === 'medium' ? 'border-warn/40' : ''}`}>
-                    <div className="flex flex-wrap items-center gap-1"><Badge tone={is.severity === 'high' ? 'danger' : is.severity === 'medium' ? 'warn' : 'neutral'}>{is.severity}</Badge><Badge tone="neutral">{is.layer}</Badge><span className="font-medium">{is.type}</span></div>
-                    {is.suggestion && <p className="mt-1 text-fg-muted">{is.suggestion}</p>}
-                  </Card>
+                {(issues ?? []).filter((x: any) => x.status === 'open' && (x.location ?? '').includes(`"chapterId":${chapter.id}`)).map((is: any) => (
+                  <IssueCard key={is.id} issue={is} chapterList={chapters} actions={<>
+                    {is.evidence && is.suggestion && <Button size="sm" icon={Wrench} loading={fixIssue.isPending && fixIssue.variables === is.id} onClick={() => fixIssue.mutate(is.id)}>AI 修复</Button>}
+                    <Button size="sm" variant="secondary" loading={resolveIssue.isPending && resolveIssue.variables?.id === is.id} onClick={() => resolveIssue.mutate({ id: is.id, status: 'resolved' })}>已修正</Button>
+                    <Button size="sm" variant="ghost" onClick={() => resolveIssue.mutate({ id: is.id, status: 'intentional' })}>有意为之</Button>
+                    <Button size="sm" variant="ghost" onClick={() => resolveIssue.mutate({ id: is.id, status: 'ignored' })}>忽略此类</Button>
+                  </>} />
                 ))}
               </div>
             )}

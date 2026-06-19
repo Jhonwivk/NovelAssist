@@ -67,6 +67,32 @@ def outline_optimize(req: OutlineOptimizeRequest) -> tuple[str, list[dict]]:
 
 
 def outline_chapters(req: OutlineChaptersRequest) -> tuple[str, list[dict]]:
+    existing = list(getattr(req, "existingChapters", []) or [])
+    if existing:
+        # 已有章节 → 严格接着往后规划，绝不重复已写节点
+        start = len(existing) + 1
+        end = start + req.count - 1
+        system = (
+            "你是资深网文策划。作品已写到第 {n} 章，请**严格接着现有进度往后**规划第 {s}~{e} 章，"
+            "推进剧情、**绝不重复已写过的情节节点**。**只输出 JSON**："
+            '{{"chapters":[{{"title","outline"}}]}}，title 为简短章节名（不带「第N章」前缀），'
+            "outline 为该章要点/情节/钩子（30-80 字）。按时间顺序、节奏紧凑、有钩子。不要解释。"
+        ).format(n=len(existing), s=start, e=end)
+        user = f"作品《{req.title or '未命名'}》\n"
+        if _world_block(req):
+            user += f"{_world_block(req)}\n\n"
+        if getattr(req, "bookSummary", None):
+            user += f"【全书摘要】\n{truncate(req.bookSummary, 1500)}\n\n"
+        recent = existing[-12:]
+        user += "【已写章节（严禁重复这些情节）】\n" + "\n".join(
+            f"第{c.order + 1}章 {c.title}：{truncate(c.summary, 120) or '（无摘要）'}" for c in recent
+        ) + "\n\n"
+        user += f"【总纲（参考整体走向，从当前位置往后推进）】\n{truncate(req.masterOutline or '（无）', 3000)}\n\n"
+        user += f"请规划接着往后的 {req.count} 章。"
+        if req.instruction:
+            user += f"\n\n额外要求：{req.instruction}"
+        return system, [{"role": "user", "content": user}]
+    # 无已有章节：从总纲开头拆（原逻辑）
     system = (
         "你是资深网文策划。把作品总纲拆解为连续的章节计划。**只输出 JSON**："
         '{"chapters":[{"title,outline}]}，'
@@ -310,3 +336,65 @@ def truncate(text: Optional[str], limit: int) -> str:
     if not text:
         return ""
     return text if len(text) <= limit else text[:limit] + "……（截断）"
+
+
+def fix_issue(req) -> tuple[str, list[dict]]:
+    system = (
+        "你是专业小说编辑。根据问题描述，修正给定原文片段中的错误（设定矛盾/逻辑问题/文风不一致等）。"
+        "直接输出修正后的正文片段（可以适当扩写使衔接自然），不要解释、不要加引号或前后缀。"
+        "保持原文的叙事人称、时态和文风。"
+        "**特别注意**：修正后的文本必须与前后文逻辑连贯、文风一致，不得引入新的矛盾。"
+        "如果修改涉及状态/等级变化（如修为境界），确保修正后的描述与全书设定一致。"
+    )
+    user = f"问题原文：\n{truncate(req.evidence, 2000)}\n\n修改建议：\n{truncate(req.suggestion, 1000)}"
+    if req.context:
+        user += f"\n\n上下文（前后段落，修正须与此衔接）：\n{truncate(req.context, 2000)}"
+    return system, [{"role": "user", "content": user}]
+
+
+# ==================== 去AI味（两遍：去套路 → 自审残留 → 终稿）====================
+
+_HUMANIZE_SYSTEM = (
+    "你是去AI味润色师。原则：去AI味不是删词，而是用**具体细节、动作、感官**替代抽象套话、排比空话与万能副词。"
+    "必须修正这些AI腔：①高频AI词（『宛如』『仿佛』『一抹』『一丝』『不禁』『淡淡地』『缓缓地』滥用）②"
+    "弱化副词与万能修饰 ③空洞抒情与强行升华 ④对称排比与三连式 ⑤书面公文腔。"
+    "**保留原意、人物语气、情节与叙事人称**，只改写遣词造句，不增删情节，不改人名设定。"
+    "直接输出润色后的正文全文，不要解释、不要加标题或前后缀。"
+)
+
+
+def humanize_pass1(req) -> tuple[str, list[dict]]:
+    user = "请对下面这段正文做去AI味润色（用具体细节替换抽象套话，去掉万能副词与排比空话）。保持原意与情节不变。\n\n"
+    user += truncate(req.text, 6000)
+    return _HUMANIZE_SYSTEM, [{"role": "user", "content": user}]
+
+
+def humanize_pass2(req) -> tuple[str, list[dict]]:
+    """第二遍：自审哪几处仍像AI，再就地改掉。"""
+    system = (
+        "你是去AI味终审。先在心里找出上一稿中**仍然最像AI的 1-3 处**（套话/排比/空抒情/万能副词），"
+        "然后输出**整段终稿**（已就地改掉这几处）。不要列出修改说明，直接输出终稿正文全文。"
+        "严禁为追求『去AI』而改变原意、情节、人物或叙事人称。"
+    )
+    user = "上一稿：\n" + truncate(req.text, 6000)
+    return system, [{"role": "user", "content": user}]
+
+
+# ==================== Beat 分解（章纲 → 分拍 → 扩写）====================
+
+_BEATS_SYSTEM = (
+    "你是网文结构师。把给定章纲拆成 4-6 个连贯的『拍』(beat)，每拍一行，格式：`序号. 目标｜冲突｜钩子`。"
+    "拍子之间要有时序与因果推进，覆盖该章完整情节弧（开篇冲突→升级→转折→收尾钩子）。"
+    "**只输出拍子列表**，不要解释。"
+)
+
+
+def chapter_beats(req) -> tuple[str, list[dict]]:
+    user = ""
+    if _world_block(req):
+        user += f"作品设定：{_world_block(req)}\n\n"
+    user += f"章节标题：{req.chapterTitle or '（未命名）'}\n章纲：\n{truncate(req.outline, 1500)}"
+    if req.instruction:
+        user += f"\n\n额外要求：{req.instruction}"
+    return _BEATS_SYSTEM, [{"role": "user", "content": user}]
+

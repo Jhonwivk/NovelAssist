@@ -1,7 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import { Providers } from './providers';
-import { ThemeToggle } from '@/components/theme-toggle';
 
 export const metadata: Metadata = {
   title: 'NovelAssist · AI 小说创作台',

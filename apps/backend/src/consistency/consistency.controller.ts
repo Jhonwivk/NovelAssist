@@ -31,4 +31,10 @@ export class ConsistencyController {
   ) {
     return this.consistency.resolveIssue(id, status);
   }
+
+  /** AI 一键修复问题。 */
+  @Post('issues/:id/fix')
+  fix(@Param('id', ParseIntPipe) id: number) {
+    return this.consistency.fixIssue(id);
+  }
 }

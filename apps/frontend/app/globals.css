@@ -79,18 +79,33 @@ body {
   outline: none;
   font-family: 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', serif;
   font-size: 17px;
-  line-height: 1.9;
+  line-height: 1.95;
+  letter-spacing: 0.01em;
   color: var(--c-fg);
+  text-align: justify;
+  text-justify: inter-character;
+  word-break: break-word;
 }
 .ProseMirror:focus {
   outline: none;
 }
 .ProseMirror p {
-  margin: 0 0 1em;
+  margin: 0 0 0.85em;
   text-indent: 2em;
+}
+/* 首段不缩进，符合中文排版习惯 */
+.ProseMirror > p:first-child {
+  text-indent: 0;
 }
 .ProseMirror p.no-indent {
   text-indent: 0;
+}
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--c-fg-faint);
+  float: left;
+  height: 0;
+  pointer-events: none;
 }
 .ProseMirror h1,
 .ProseMirror h2,

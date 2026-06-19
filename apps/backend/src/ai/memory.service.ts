@@ -29,7 +29,7 @@ export class MemoryService {
     if (paragraphs.length === 0) return null;
 
     // L2 章节摘要
-    const l2 = await this.ai.jsonRequest('/summarize', {
+    const l2 = await this.ai.loggedJsonSilent('summarize', chapter.novelId, '/summarize', {
       novelId: chapter.novelId,
       chapterId,
       title: chapter.title,
@@ -48,7 +48,7 @@ export class MemoryService {
     await this.prisma.memory.deleteMany({ where: { novelId: chapter.novelId, level: 'L1', sourceId: chapterId } });
     for (let i = 0; i < chunks.length; i++) {
       try {
-        const r: any = await this.ai.jsonRequest('/summarize', {
+        const r: any = await this.ai.loggedJsonSilent('summarize-l1', chapter.novelId, '/summarize', {
           novelId: chapter.novelId,
           chapterId,
           title: `${chapter.title} · 段落 ${i + 1}`,
@@ -87,7 +87,7 @@ export class MemoryService {
     });
     const summaries = chapters.map((c) => c.summary?.content).filter(Boolean) as string[];
     if (summaries.length === 0) return null;
-    const r: any = await this.ai.jsonRequest('/summarize', {
+    const r: any = await this.ai.loggedJsonSilent('summarize-volume', novelId, '/summarize', {
       novelId,
       chapterId: 0,
       title: '卷摘要',
@@ -108,7 +108,7 @@ export class MemoryService {
     const chapterSummaries = chapters.map((c) => c.summary?.content).filter(Boolean) as string[];
     if (chapterSummaries.length === 0) return null;
 
-    const r: any = await this.ai.jsonRequest('/summarize-book', {
+    const r: any = await this.ai.loggedJsonSilent('summarize-book', novelId, '/summarize-book', {
       title: novel.title,
       genre: novel.genre ?? undefined,
       synopsis: novel.synopsis ?? undefined,
@@ -124,15 +124,21 @@ export class MemoryService {
 
   // ============ 检索（词法，无向量依赖）============
 
-  /** 词法检索 top-k 记忆（L1/L2/L3），按与 query 的关键词重叠打分。 */
+  /** 检索 top-k 记忆（L1/L2/L3）：词法粗筛 → 字符 n-gram 余弦重排（语义近似，零向量依赖）。 */
   async retrieve(novelId: number, query: string, topK = 8) {
     const terms = tokenize(query);
     if (terms.length === 0) return [];
     const memories = await this.prisma.memory.findMany({
       where: { novelId, level: { in: ['L1', 'L2', 'L3'] } },
     });
+    const qVec = ngramVector(query);
     return memories
-      .map((m) => ({ m, score: score(m.content, terms) }))
+      .map((m) => {
+        const lex = score(m.content, terms);
+        const sem = cosine(qVec, ngramVector(m.content));
+        // 融合：词法保证召回，语义提升相关性
+        return { m, score: lex > 0 ? lex * (0.5 + 0.5 * sem) : sem * 0.5 };
+      })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, topK)
@@ -266,6 +272,33 @@ function score(content: string, terms: string[]): number {
 function clamp(s: string | undefined | null, n: number): string {
   if (!s) return '';
   return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+/** 字符 2-gram 稀疏向量（键→计数），用于近似语义相似度，零向量依赖。 */
+function ngramVector(text: string): Map<string, number> {
+  const clean = stripHtml(text ?? '').replace(/\s+/g, '');
+  const v = new Map<string, number>();
+  for (let i = 0; i < clean.length - 1; i++) {
+    const g = clean.slice(i, i + 2);
+    v.set(g, (v.get(g) ?? 0) + 1);
+  }
+  return v;
+}
+
+/** 稀疏向量余弦相似度（0-1）。 */
+function cosine(a: Map<string, number>, b: Map<string, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let dot = 0;
+  for (const [k, va] of a) {
+    const vb = b.get(k);
+    if (vb) dot += va * vb;
+  }
+  let na = 0;
+  for (const v of a.values()) na += v * v;
+  let nb = 0;
+  for (const v of b.values()) nb += v * v;
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
 }
 
 function msg(e: unknown): string {

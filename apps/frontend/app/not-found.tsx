@@ -1,3 +1,9 @@
+'use client';
+
+// 必须是 Client Component：把 lucide 的 forwardRef（如 Plus）作为 icon prop 传给
+// 客户端 <Button> 时，不能跨 Server→Client 序列化边界（会报 "Functions cannot be
+// passed directly to Client Components"）。根 not-found 会被嵌入每个路由的 RSC
+// payload，一旦它不可序列化，所有路由（含 /）在 next start SSR 下都 500。
 import { Compass, Plus } from 'lucide-react';
 import { Button } from '@/components/ui';
 

@@ -1,0 +1,53 @@
+appId: com.novelassist.app
+productName: NovelAssist
+directories:
+  output: desktop/dist
+
+# 只把 main.cjs + package.json 放进 asar（~2KB）；其余全部作为 unpacked extraResources，
+# 避免 read-only asar 阻止 native 二进制（Prisma engine）加载与 DB/日志写入。
+asar: true
+files:
+  - desktop/main.cjs
+  - package.json
+
+extraResources:
+  # 独立 Node 22 LTS（backend + Next standalone server 共用）
+  - from: desktop/.stage/node
+    to: node
+    filter: ['**']
+  # 可重定位 Python 3.12 + 依赖（含 uvloop/pydantic-core 等 native wheel）
+  - from: desktop/.stage/python
+    to: python
+    filter: ['**', '!**/__pycache__/**']
+  # backend / frontend 整树打成 tar.gz：electron-builder 会过滤 extraResources 里的
+  # node_modules，故打包成单文件发布，运行时由 main.cjs 解压到 userData。
+  - from: desktop/.stage/backend.tar.gz
+    to: backend.tar.gz
+  - from: desktop/.stage/frontend.tar.gz
+    to: frontend.tar.gz
+  # ai-service 只读源码
+  - from: apps/ai-service/app
+    to: ai-service/app
+  # 首次启动拷到 userData 的 .env 模板（空密钥）
+  - from: desktop/.stage/default.env
+    to: ai-service/default.env
+  # 首次启动拷到 userData 的预迁移空库
+  - from: desktop/.stage/db/template.db
+    to: db/template.db
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+    - zip
+  icon: desktop/icon.icns
+  hardenedRuntime: false
+  gatekeeperAssess: false
+win:
+  target: nsis
+  icon: desktop/icon.ico
+linux:
+  target:
+    - AppImage
+    - deb
+  icon: desktop/icon.png

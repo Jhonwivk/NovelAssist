@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
-import { htmlToParagraphs } from '../common/text.utils';
+import { countWords, htmlToParagraphs, stripHtml } from '../common/text.utils';
 
 /**
  * 一致性引擎五层（plan §5）。
@@ -10,7 +10,16 @@ import { htmlToParagraphs } from '../common/text.utils';
  */
 
 const DEAD_VALUES = ['死亡', '已死', '陨落', '阵亡', '身亡', '故去'];
-const MONOTONIC_ATTRS = ['修为', '境界', '等级', '实力', '实力境界'];
+// 归一后修为统一存「境界」，规则只认这一个 key。
+const MONOTONIC_ATTRS = ['境界'];
+// 抽取属性名归一（修复"修为/等级/境界"三套并存击穿规则的问题）。
+const ATTR_CANON: Record<string, string> = {
+  修为: '境界', 修为等级: '境界', 等级: '境界', 境界: '境界', 实力: '境界', 实力境界: '境界',
+  身体: '身体', 身体伤势: '身体', 伤势: '身体', 状态: '状态',
+  位置: '位置', 情绪: '情绪', 持有者: '持有者',
+};
+// 元指代/泛称，绝不应入库为实体（曾出现"读者"被当 character 注入信息流约束）。
+const META_NAMES = new Set(['读者', '读者们', '作者', '笔者', '旁白', '叙述者', '众人', '所有人', '大家', '某人', '我', '你', '他', '她', '它']);
 
 interface RawIssue {
   layer: 'L2' | 'L3' | 'L4';
@@ -45,7 +54,7 @@ export class ConsistencyService {
       select: { name: true },
     });
 
-    const res: any = await this.ai.jsonRequest('/extract', {
+    const res: any = await this.ai.loggedJsonSilent('extract', chapter.novelId, '/extract', {
       title: chapter.title,
       content,
       knownEntities: known.map((e) => e.name),
@@ -63,15 +72,8 @@ export class ConsistencyService {
     for (const sc of facts.state_changes ?? []) {
       if (!sc?.entity || !sc?.attr) continue;
       const ent = await this.findOrCreateEntity(chapter.novelId, sc.entity, 'character');
-      await this.prisma.entityState.create({
-        data: {
-          entityId: ent.id,
-          chapterId,
-          attrName: String(sc.attr),
-          value: String(sc.value ?? ''),
-          evidence: sc.evidence ?? null,
-        },
-      });
+      if (!ent) continue;
+      await this.upsertState(ent.id, chapterId, canonAttr(String(sc.attr)), sc.value, sc.evidence ?? null);
     }
 
     // events
@@ -94,6 +96,7 @@ export class ConsistencyService {
       if (!rc?.subject || !rc?.object || !rc?.type) continue;
       const s = await this.findOrCreateEntity(chapter.novelId, rc.subject, 'character');
       const o = await this.findOrCreateEntity(chapter.novelId, rc.object, 'character');
+      if (!s || !o) continue;
       await this.prisma.relation.create({
         data: {
           novelId: chapter.novelId,
@@ -127,17 +130,14 @@ export class ConsistencyService {
       }
     }
 
-    // character_states：角色当前状态（位置/情绪/身体/等级）→ EntityState
+    // character_states：角色当前状态（位置/情绪/身体/等级）→ EntityState（归一 + 去重）
     for (const cs of facts.character_states ?? []) {
       if (!cs?.entity) continue;
       const ent = await this.findOrCreateEntity(chapter.novelId, String(cs.entity), 'character');
+      if (!ent) continue;
       for (const attr of ['位置', '情绪', '身体', '等级', '修为']) {
         const v = (cs as any)[attr];
-        if (v) {
-          await this.prisma.entityState.create({
-            data: { entityId: ent.id, chapterId, attrName: attr, value: String(v), evidence: null },
-          });
-        }
+        if (v) await this.upsertState(ent.id, chapterId, canonAttr(attr), v, null);
       }
     }
 
@@ -146,17 +146,16 @@ export class ConsistencyService {
       if (!it?.item) continue;
       const item = await this.findOrCreateEntity(chapter.novelId, String(it.item), 'item');
       const toEntity = it.to ? await this.findOrCreateEntity(chapter.novelId, String(it.to), 'character') : null;
-      if (toEntity) {
-        await this.prisma.entityState.create({
-          data: { entityId: item.id, chapterId, attrName: '持有者', value: String(toEntity.id) },
-        });
+      if (item && toEntity) {
+        await this.upsertState(item.id, chapterId, '持有者', String(toEntity.id), null);
       }
     }
 
-    // information_changes：信息流知情者更新
+    // information_changes：信息流知情者更新（learner 为元指代如"读者"则跳过，防伪角色污染）
     for (const ic of facts.information_changes ?? []) {
       if (!ic?.content || !ic?.learner) continue;
       const learner = await this.findOrCreateEntity(chapter.novelId, String(ic.learner), 'character');
+      if (!learner) continue;
       let info = await this.prisma.information.findFirst({ where: { novelId: chapter.novelId, content: String(ic.content) } });
       if (!info) {
         info = await this.prisma.information.create({
@@ -189,7 +188,8 @@ export class ConsistencyService {
     const l3 = await this.l3Graph(chapter);
     const l4 = await this.l4Semantic(chapter);
 
-    const all = [...l2, ...l3, ...l4];
+    // L4 语义层易误报：丢弃低置信问题（L1-L3 为确定性规则，全部保留）。
+    const all = [...l2, ...l3, ...l4].filter((i) => !(i.layer === 'L4' && i.confidence < 0.55));
 
     // 覆盖该章节旧问题
     await this.prisma.consistencyIssue.deleteMany({ where: { novelId: chapter.novelId, location: { contains: `"chapterId":${chapterId}` } } });
@@ -277,6 +277,85 @@ export class ConsistencyService {
     const weight = Math.max(0.2, 1 - rate);
     await this.prisma.rule.updateMany({ where: { novelId: issue.novelId, name: issue.type }, data: { weight } });
     return { updated, weight };
+  }
+
+  /** AI 一键修复：据 evidence+suggestion 改写问题段落，替换章节正文，标记已解决。 */
+  async fixIssue(id: number) {
+    const issue = await this.prisma.consistencyIssue.findUnique({ where: { id } });
+    if (!issue) throw new NotFoundException(`Issue ${id} not found`);
+    if (!issue.evidence || !issue.suggestion) {
+      return { success: false, message: '该问题缺少原文证据或修改建议，无法自动修复' };
+    }
+
+    // 从 location JSON 提取 chapterId
+    const locMatch = issue.location?.match(/"chapterId":(\d+)/);
+    const chapterId = locMatch ? Number(locMatch[1]) : null;
+    if (!chapterId) {
+      return { success: false, message: '无法定位问题所在章节' };
+    }
+
+    const chapter = await this.prisma.chapter.findUnique({ where: { id: chapterId } });
+    if (!chapter) {
+      return { success: false, message: '章节不存在' };
+    }
+
+    // 调 ai-service 修正
+    const context = htmlToParagraphs(chapter.content).join('\n').slice(0, 2000);
+    const result: any = await this.ai.jsonRequest('/fix-issue', {
+      evidence: issue.evidence,
+      suggestion: issue.suggestion,
+      context,
+    });
+    const fixedText = result?.content ?? '';
+    if (!fixedText.trim()) {
+      return { success: false, message: 'AI 未返回修正结果' };
+    }
+
+    // 段落级替换：在 <p> 块里按"纯文本包含"定位（避免 HTML 标签干扰导致直替失败）。
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const plainEvidence = stripHtml(issue.evidence).replace(/\s+/g, '');
+    const probe = plainEvidence.slice(0, Math.min(24, plainEvidence.length));
+    let newContent = chapter.content;
+    let replaced = false;
+
+    const blocks = chapter.content.match(/<p>[\s\S]*?<\/p>/gi) || [];
+    if (probe && blocks.length) {
+      for (const b of blocks) {
+        if (stripHtml(b).replace(/\s+/g, '').includes(probe)) {
+          newContent = newContent.replace(b, `<p>${esc(fixedText.trim())}</p>`);
+          replaced = true;
+          break;
+        }
+      }
+    }
+    // 回退：原始 evidence 直接子串替换
+    if (!replaced) {
+      const raw = issue.evidence.trim();
+      if (raw && chapter.content.includes(raw)) {
+        newContent = chapter.content.replace(raw, esc(fixedText.trim()));
+        replaced = true;
+      }
+    }
+    if (!replaced) {
+      return { success: false, message: '未在正文中定位到问题段落，请手动修复' };
+    }
+
+    // ① 修复前自动快照（可回滚）
+    const snapshot = await this.prisma.chapterSnapshot.create({
+      data: { chapterId, content: chapter.content, wordCount: chapter.wordCount, reason: 'pre-fix' },
+    });
+
+    // ② 保存 + 重算字数 + 标记已解决
+    const updated = await this.prisma.chapter.update({
+      where: { id: chapterId },
+      data: { content: newContent, wordCount: countWords(newContent) },
+    });
+    await this.prisma.consistencyIssue.update({ where: { id }, data: { status: 'resolved' } });
+
+    // ③ 修复后自动复查（fire-and-forget，检测修复是否引入新矛盾）
+    this.checkChapter(chapterId).catch(() => undefined);
+
+    return { success: true, message: '已自动修复并替换正文（修复前已存快照，可回滚）', wordCount: updated.wordCount, snapshotId: snapshot.id };
   }
 
   // ================= 各层实现 =================
@@ -392,6 +471,8 @@ export class ConsistencyService {
       try { causes = JSON.parse(ev.causes ?? '[]'); } catch { causes = []; }
       if (!causes.length) continue;
       const evOrder = orderMap.get(ev.chapterId ?? -1) ?? -1;
+      // 首章(order 0)的 causes 多为背景回溯，本就无前置事件，跳过以降噪。
+      if (evOrder <= 0) continue;
       for (const c of causes) {
         const matched = events.some((e) => {
           const o = orderMap.get(e.chapterId ?? -1) ?? -1;
@@ -450,7 +531,7 @@ export class ConsistencyService {
     const priorContext = recentStates.map((s) => `${s.attrName}=${s.value}`).join('；');
 
     try {
-      const res: any = await this.ai.jsonRequest('/consistency-check', {
+      const res: any = await this.ai.loggedJsonSilent('consistency-check', chapter.novelId, '/consistency-check', {
         title: novel?.title,
         genre: novel?.genre ?? undefined,
         worldviewText: novel?.worldviewText ?? undefined,
@@ -498,12 +579,26 @@ export class ConsistencyService {
     return out;
   }
 
-  private async findOrCreateEntity(novelId: number, name: string, type: string, description?: string) {
+  /** 规范化名称 + 去重；元指代/无效名返回 null（调用方需跳过）。 */
+  private async findOrCreateEntity(novelId: number, rawName: string, type: string, description?: string) {
+    const name = cleanEntityName(rawName);
+    if (!name) return null;
     const existing = await this.prisma.entity.findFirst({ where: { novelId, name } });
     if (existing) return existing;
     return this.prisma.entity.create({
       data: { novelId, name, type, description: description ?? null },
     });
+  }
+
+  /** EntityState 去重写入：同(实体,章,属性)已存在则更新，避免一章内同属性多条。 */
+  private async upsertState(entityId: number, chapterId: number, attrName: string, value: unknown, evidence: string | null = null) {
+    const v = String(value ?? '');
+    const existing = await this.prisma.entityState.findFirst({ where: { entityId, chapterId, attrName } });
+    if (existing) {
+      await this.prisma.entityState.update({ where: { id: existing.id }, data: { value: v, evidence } });
+    } else {
+      await this.prisma.entityState.create({ data: { entityId, chapterId, attrName, value: v, evidence } });
+    }
   }
 
   private async orderMap(novelId: number): Promise<Map<number, number>> {
@@ -529,6 +624,25 @@ export class ConsistencyService {
       data: defaults.map(([name, desc]) => ({ novelId, name, description: desc, layer: 'L2', enabled: true, weight: 1.0 })),
     });
   }
+}
+
+/** 属性名归一（修为/等级/境界→境界 等）。 */
+function canonAttr(a: string): string {
+  const k = (a ?? '').trim();
+  return ATTR_CANON[k] ?? k;
+}
+
+/** 实体名规范化：去括号注释/书名号/引号；元指代或异常名返回 null。 */
+function cleanEntityName(raw?: string): string | null {
+  if (raw == null) return null;
+  let n = String(raw).trim();
+  n = n.replace(/[（(][^）)]*[）)]/g, ''); // 去「（被熔炼消解）」「（内含…）」等注释
+  n = n.replace(/^[「『"'《]+|[」』"'》]+$/g, '').trim();
+  n = n.replace(/[，。、,.!！?？;；:：]+$/g, '').trim();
+  if (!n) return null;
+  if (n.length > 16) return null; // 过长疑似句子/描述，非实体名
+  if (META_NAMES.has(n)) return null;
+  return n;
 }
 
 function normalizeType(t?: string): string {

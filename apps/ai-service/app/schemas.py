@@ -69,10 +69,19 @@ class OutlineOptimizeRequest(NovelBase):
     instruction: Optional[str] = None
 
 
+class ChapterRef(BaseModel):
+    order: int = 0
+    title: str = ""
+    summary: Optional[str] = None
+
+
 class OutlineChaptersRequest(NovelBase):
     masterOutline: Optional[str] = None
     count: int = 10
     instruction: Optional[str] = None
+    # 已有章节：有则「接着往后规划」，避免重复开头节点
+    existingChapters: list[ChapterRef] = Field(default_factory=list)
+    bookSummary: Optional[str] = None
 
 
 class IdeaRequest(BaseModel):
@@ -134,3 +143,19 @@ class StyleGuardRequest(BaseModel):
     traits: Optional[str] = None
     bannedWords: list[str] = Field(default_factory=list)
     samples: list[str] = Field(default_factory=list)
+
+
+class FixIssueRequest(BaseModel):
+    evidence: str = ""
+    suggestion: str = ""
+    context: str = ""
+
+
+class HumanizeRequest(BaseModel):
+    text: str = ""
+
+
+class BeatsRequest(NovelBase):
+    chapterTitle: Optional[str] = None
+    outline: str = ""
+    instruction: Optional[str] = None

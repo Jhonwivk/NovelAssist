@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { VolumesController } from './volumes.controller';
+import { VolumesController, VolumesItemController } from './volumes.controller';
 import { VolumesService } from './volumes.service';
 
 @Module({
-  controllers: [VolumesController],
+  controllers: [VolumesController, VolumesItemController],
   providers: [VolumesService],
 })
 export class VolumesModule {}
