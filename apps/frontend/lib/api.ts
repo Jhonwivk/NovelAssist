@@ -189,6 +189,11 @@ export const apiClient = {
       `/novels/${novelId}/analyze-all`,
       { method: 'POST' },
     ),
+  reflowAll: (novelId: number) =>
+    api<{ reflowed: number; total: number }>(
+      `/novels/${novelId}/reflow-all`,
+      { method: 'POST' },
+    ),
   chapterGate: (chapterId: number) => api<ChapterGate>(`/chapters/${chapterId}/gate`),
   humanize: (chapterId: number) =>
     api<{ id: number; wordCount: number; snapshotId: number }>(`/ai/humanize/${chapterId}`, { method: 'POST' }),

@@ -89,6 +89,12 @@ export class ChaptersController {
     return this.pipeline.analyzeBook(novelId);
   }
 
+  /** 整理全书排版：合并被错误拆成独立段的引号、清理空段（修复导入脏数据）。无 LLM，毫秒级。 */
+  @Post('novels/:novelId/reflow-all')
+  reflowAll(@Param('novelId', ParseIntPipe) novelId: number) {
+    return this.pipeline.reflowBook(novelId);
+  }
+
   @Delete('chapters/:id')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.chapters.remove(id);

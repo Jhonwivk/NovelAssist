@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { MemoryService } from '../ai/memory.service';
 import { ConsistencyService } from '../consistency/consistency.service';
-import { bigramSimilarity, countWords, paragraphsToHtml } from '../common/text.utils';
+import { bigramSimilarity, countWords, paragraphsToHtml, reflowParagraphs } from '../common/text.utils';
 
 export interface ChapterGate {
   passed: boolean;
@@ -270,6 +270,28 @@ export class ChapterPipelineService {
       }
     }
     return { analyzed, failed, total: chapters.length };
+  }
+
+  /**
+   * 全书整理排版：对每章正文跑 reflowParagraphs（合并被错误拆成独立段的引号、
+   * 清理空段），修复导入/历史分段的脏数据。无 LLM 调用、毫秒级。
+   */
+  async reflowBook(novelId: number): Promise<{ reflowed: number; total: number }> {
+    const chapters = await this.prisma.chapter.findMany({
+      where: { novelId, wordCount: { gt: 0 } },
+      orderBy: { order: 'asc' },
+      select: { id: true, content: true, wordCount: true },
+    });
+    let reflowed = 0;
+    for (const c of chapters) {
+      const fixed = reflowParagraphs(c.content);
+      if (fixed !== c.content) {
+        await this.prisma.chapter.update({ where: { id: c.id }, data: { content: fixed } });
+        reflowed++;
+      }
+    }
+    if (reflowed > 0) await this.recountNovel(novelId);
+    return { reflowed, total: chapters.length };
   }
 }
 

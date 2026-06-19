@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Download, Layers, ListOrdered, MoreHorizontal, MoreVertical, PenLine, Plus, Sparkles, Trash2, Pencil, Wand2,
+  AlignLeft, Download, Layers, ListOrdered, MoreHorizontal, MoreVertical, PenLine, Plus, Sparkles, Trash2, Pencil, Wand2,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api';
 import { AiChat, ConsistencyPanel, CostPanel } from '@/components/workbench-panels';
@@ -50,6 +50,11 @@ export default function WorkbenchPage({ params }: { params: { id: string } }) {
   const moveChapter = useMutation({ mutationFn: ({ id, volumeId }: { id: number; volumeId: number | null }) => apiClient.saveChapter(id, { volumeId }), onSuccess: () => qc.invalidateQueries({ queryKey: ['novel', novelId] }) });
   const createVolume = useMutation({ mutationFn: (t: string) => apiClient.createVolume(novelId, { title: t }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['novel', novelId] }); toast.success('已新建卷'); setNewVol(''); } });
   const delVolume = useMutation({ mutationFn: (id: number) => apiClient.deleteVolume(id), onSuccess: () => { qc.invalidateQueries({ queryKey: ['novel', novelId] }); toast.success('已删除卷（章节转为未分卷）'); } });
+  const reflow = useMutation({
+    mutationFn: () => apiClient.reflowAll(novelId),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ['novel', novelId] }); toast.success(`已整理 ${r.reflowed}/${r.total} 章排版（合并孤立引号、清理空段）`); },
+    onError: () => toast.error('整理失败'),
+  });
 
   function submitRename() {
     if (!rename || !rename.value.trim()) return;
@@ -96,11 +101,12 @@ export default function WorkbenchPage({ params }: { params: { id: string } }) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" icon={Plus} onClick={() => setShowNew((s) => !s)}>新建章节</Button>
-          <Menu align="end" trigger={<Button variant="secondary" size="sm" iconRight={MoreHorizontal}>生成</Button>} items={[
+          <Menu align="end" trigger={<Button variant="secondary" size="sm" iconRight={MoreHorizontal}>更多</Button>} items={[
             { label: '批量生成（多章计划）', icon: Sparkles, onClick: () => setBatchOpen(true) },
             { label: '整书生成（autopilot）', icon: Wand2, onClick: () => setAutopilotOpen(true) },
             { divider: true, label: '' },
             { label: '批量改标题', icon: Pencil, onClick: () => setBatchTitlesOpen(true) },
+            { label: '整理全书排版', icon: AlignLeft, onClick: () => reflow.mutate() },
           ]} />
         </div>
       </div>

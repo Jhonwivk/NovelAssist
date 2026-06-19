@@ -74,3 +74,36 @@ export function paragraphsToHtml(text: string): string {
     .map((p) => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
     .join('');
 }
+
+/** 整理章节排版：把被错误拆成独立段的引号（如 `"内容"` 被切成 `/"/内容/"/`）
+ *  按"成对吸附"合并回对话段——开引号并到下一段开头、闭引号并到上一段末尾，
+ *  保留原叙述段不被破坏。用于修复导入/历史分段的脏数据。返回整理后的 HTML。 */
+export function reflowParagraphs(html: string): string {
+  const paras = htmlToParagraphs(html);
+  if (paras.length <= 1) return html;
+  const QUOTE = new Set(['"', '“', '”', '「', '」', '『', '』']); // " " " 「 」 『 』
+  const isQuote = (s: string) => {
+    const t = (s ?? '').trim();
+    return t.length > 0 && t.length <= 2 && [...t].every((c) => QUOTE.has(c));
+  };
+  const out = [...paras];
+  let i = 0;
+  while (i < out.length) {
+    if (isQuote(out[i])) {
+      let j = i + 1;
+      while (j < out.length && !isQuote(out[j])) j++;
+      if (j < out.length) {
+        // 开引号(out[i])并到 i+1 段开头；闭引号(out[j])并到 j-1 段末尾
+        if (i + 1 <= j - 1) {
+          out[i + 1] = out[i] + out[i + 1];
+          out[j - 1] = out[j - 1] + out[j];
+        }
+        out.splice(j, 1);
+        out.splice(i, 1);
+        continue; // 删除后重新检查当前位置
+      }
+    }
+    i++;
+  }
+  return paragraphsToHtml(out.join('\n'));
+}
