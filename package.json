@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "AI 辅助小说创作系统 — 阶段一基础闭环（plan.md）",
+  "main": "desktop/main.cjs",
+  "author": "NovelAssist",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "concurrently -n backend,frontend -c blue,green \"pnpm --filter backend dev\" \"pnpm --filter frontend dev\"",
@@ -10,9 +12,21 @@
     "ai": "cd apps/ai-service && uv run uvicorn app.main:app --reload --port 8000",
     "db": "pnpm --filter backend prisma:migrate",
     "db:studio": "pnpm --filter backend prisma:studio",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "desktop:stage:backend": "node desktop/build.cjs backend",
+    "desktop:stage:frontend": "node desktop/build.cjs frontend",
+    "desktop:stage:python": "node desktop/build.cjs python",
+    "desktop:stage:node": "node desktop/build.cjs node",
+    "desktop:stage:env": "node desktop/build.cjs env",
+    "desktop:build": "node desktop/build.cjs all",
+    "desktop": "pnpm desktop:build && electron desktop/main.cjs",
+    "desktop:dev": "electron desktop/main.cjs",
+    "app:build": "pnpm desktop:build && electron-builder --config desktop/builder.yml",
+    "app:run": "pnpm desktop:build && electron desktop/main.cjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.3"
   }
 }

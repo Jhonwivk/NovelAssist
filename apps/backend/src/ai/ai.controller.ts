@@ -17,7 +17,7 @@ import {
   PolishDto,
   ReviewDto,
 } from './dto/ai.dto';
-import { countWords, paragraphsToHtml } from '../common/text.utils';
+import { bigramSimilarity, countWords, paragraphsToHtml } from '../common/text.utils';
 
 @Controller('ai')
 export class AiController {
@@ -77,12 +77,46 @@ export class AiController {
   async outlineChapters(@Body() dto: OutlineChaptersDto) {
     const base = await this.novelBase(dto.novelId);
     const novel = await this.prisma.novel.findUnique({ where: { id: dto.novelId } });
-    return this.ai.loggedJson('outline-chapters', dto.novelId, '/outline-chapters', {
+    // 取已有章节（标题 + 摘要），让 AI「接着往后规划」而非从总纲开头重复
+    const existing = await this.prisma.chapter.findMany({
+      where: { novelId: dto.novelId },
+      orderBy: { order: 'asc' },
+      include: { summary: true },
+    });
+    const res: any = await this.ai.loggedJson('outline-chapters', dto.novelId, '/outline-chapters', {
       ...base,
       masterOutline: novel?.masterOutline ?? undefined,
       count: dto.count ?? 10,
       instruction: dto.instruction,
+      bookSummary: novel?.bookSummary ?? undefined,
+      existingChapters: existing.map((c) => ({
+        order: c.order,
+        title: c.title,
+        summary: c.summary?.content ?? undefined,
+      })),
     });
+
+    // P0 去重（保守）：仅剔除与已写章节「标题+章纲」近重复的计划；用 Jaccard 避免通用词误伤，
+    // 且绝不清空整波（全判重则回退原计划，避免无章可建）。
+    const planned = res?.result?.chapters;
+    if (Array.isArray(planned) && existing.length) {
+      const corpus = existing.map((c) => `${c.title}。${c.outlineText ?? ''}`);
+      const dropped: string[] = [];
+      const kept = planned.filter((ch: any) => {
+        const probe = `${ch?.title ?? ''}。${ch?.outline ?? ''}`;
+        const maxSim = Math.max(0, ...corpus.map((c) => bigramSimilarity(probe, c)));
+        if (maxSim >= 0.55) {
+          dropped.push(String(ch?.title ?? ''));
+          return false;
+        }
+        return true;
+      });
+      if (kept.length) {
+        res.result.chapters = kept;
+        if (dropped.length) res.result.dropped = dropped;
+      }
+    }
+    return res;
   }
 
   /** 生成单章正文并落库（批量生成正文用：服务端消费流 + 保存）。 */
@@ -91,7 +125,7 @@ export class AiController {
     const chapter = await this.prisma.chapter.findUnique({ where: { id: chapterId } });
     if (!chapter) throw new NotFoundException(`Chapter ${chapterId} not found`);
     const ctx = await this.memory.assembleContext(chapter.novelId, chapterId);
-    const text = await this.ai.collectStream('/chapter', {
+    const { text, usage } = await this.ai.collectStream('/chapter', {
       title: ctx.novel.title,
       genre: ctx.novel.genre,
       synopsis: ctx.novel.synopsis,
@@ -106,7 +140,9 @@ export class AiController {
       where: { id: chapterId },
       data: { content: html, wordCount: countWords(html), status: 'writing' },
     });
-    this.logTask('chapter', chapter.novelId, chapterId, true);
+    this.prisma.aiTask
+      .create({ data: { type: 'chapter', novelId: chapter.novelId, chapterId, status: 'success', tokensIn: usage?.in ?? 0, tokensOut: usage?.out ?? 0, cached: false, model: usage?.model ?? null } })
+      .catch(() => undefined);
     return { id: chapterId, wordCount: updated.wordCount, length: text.length };
   }
 
@@ -232,5 +268,40 @@ export class AiController {
     if (!chapter) throw new NotFoundException(`Chapter ${dto.chapterId} not found`);
     const content = htmlToParagraphs(chapter.content).join('\n\n');
     return this.ai.loggedJson('review', chapter.novelId, '/review', { content, instruction: dto.instruction });
+  }
+
+  // ===== 去AI味（两遍润色）=====
+
+  @Post('humanize/:chapterId')
+  async humanize(@Param('chapterId', ParseIntPipe) chapterId: number) {
+    const chapter = await this.prisma.chapter.findUnique({ where: { id: chapterId } });
+    if (!chapter) throw new NotFoundException(`Chapter ${chapterId} not found`);
+    const plain = htmlToParagraphs(chapter.content).join('\n\n');
+    if (!plain.trim()) throw new NotFoundException(`Chapter ${chapterId} 正文为空`);
+    const r = await this.ai.loggedJson('humanize', chapter.novelId, '/humanize', { text: plain });
+    const text = r?.content ?? plain;
+    const html = paragraphsToHtml(text);
+    // 改写前存快照（可回滚）
+    const snap = await this.prisma.chapterSnapshot.create({
+      data: { chapterId, content: chapter.content, wordCount: chapter.wordCount, reason: 'pre-humanize' },
+    });
+    const updated = await this.prisma.chapter.update({
+      where: { id: chapterId },
+      data: { content: html, wordCount: countWords(html) },
+    });
+    return { id: chapterId, wordCount: updated.wordCount, snapshotId: snap.id };
+  }
+
+  // ===== Beat 分解（章纲 → 4-6 拍）=====
+
+  @Post('chapter-beats')
+  async chapterBeats(@Body() dto: { novelId: number; chapterTitle?: string; outline: string; instruction?: string }) {
+    const base = await this.novelBase(dto.novelId);
+    return this.ai.loggedJson('chapter-beats', dto.novelId, '/chapter-beats', {
+      ...base,
+      chapterTitle: dto.chapterTitle,
+      outline: dto.outline,
+      instruction: dto.instruction,
+    });
   }
 }

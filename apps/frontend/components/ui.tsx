@@ -393,6 +393,7 @@ export function Menu({ trigger, items, align = 'end' }: { trigger: ReactNode; it
 /* Popover 底件：portal + 定位（trigger 下方）+ 外部点击关闭 */
 function Popover({ open, onOpenChange, trigger, children, align = 'end' }: { open: boolean; onOpenChange: (v: boolean) => void; trigger: ReactNode; children: ReactNode; align?: 'start' | 'end' }) {
   const ref = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   useEffect(() => {
     if (!open || !ref.current) return;
@@ -402,7 +403,11 @@ function Popover({ open, onOpenChange, trigger, children, align = 'end' }: { ope
   }, [open, align]);
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onOpenChange(false); };
+    const close = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || contentRef.current?.contains(t)) return;
+      onOpenChange(false);
+    };
     const esc = (e: KeyboardEvent) => e.key === 'Escape' && onOpenChange(false);
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);
@@ -413,6 +418,7 @@ function Popover({ open, onOpenChange, trigger, children, align = 'end' }: { ope
       {trigger}
       {open && pos && typeof document !== 'undefined' && createPortal(
         <div
+          ref={contentRef}
           className="fixed z-pop min-w-[10rem] animate-scale-in rounded-md border border-border bg-surface shadow-pop"
           style={{ top: pos.top, left: align === 'end' ? pos.left - 160 : pos.left }}
         >

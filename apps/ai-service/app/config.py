@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+import os
+
+# 先用 .env 文件强制覆盖进程已有的环境变量（pydantic-settings 默认环境变量优先于 .env，
+# 若进程继承了旧值——如曾被 API 配置面板改过——会覆盖 .env 的最新值）。让 .env 成为唯一真相源。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.environ.get("NA_ENV_FILE") or ".env", override=True)
+except Exception:
+    pass
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

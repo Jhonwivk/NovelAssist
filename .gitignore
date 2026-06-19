@@ -7,6 +7,9 @@ build/
 .next/
 out/
 
+# desktop packaging staging (bundled node/python/backend/frontend)
+desktop/.stage/
+
 # env
 .env
 .env.local
@@ -34,3 +37,11 @@ npm-debug.log*
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# typescript build info
+*.tsbuildinfo
+
+# 生成的小说样本（运行时产物，不入库）
+*样书*.txt
+apps/frontend/窃天诀*.txt
+

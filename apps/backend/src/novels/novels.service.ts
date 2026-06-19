@@ -15,7 +15,15 @@ export class NovelsService {
   }
 
   findAll() {
-    return this.prisma.novel.findMany({ orderBy: { updatedAt: 'desc' } }).then((rows) => rows.map(deserialize));
+    return this.prisma.novel.findMany({
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        chapters: {
+          orderBy: { order: 'asc' },
+          select: { id: true, title: true, order: true, status: true, wordCount: true, updatedAt: true },
+        },
+      },
+    }).then((rows) => rows.map(deserialize));
   }
 
   async findOne(id: number) {
@@ -25,7 +33,7 @@ export class NovelsService {
         volumes: { orderBy: { order: 'asc' } },
         chapters: {
           orderBy: { order: 'asc' },
-          select: { id: true, title: true, order: true, status: true, wordCount: true, updatedAt: true },
+          select: { id: true, title: true, order: true, status: true, wordCount: true, volumeId: true, updatedAt: true },
         },
       },
     });

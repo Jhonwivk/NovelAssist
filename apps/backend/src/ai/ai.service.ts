@@ -37,6 +37,19 @@ export class AiService {
     }
   }
 
+  /** 同 loggedJson，但失败不抛（用于 memory/consistency 等容错链路内部调用），仅记 error 任务。 */
+  async loggedJsonSilent(type: string, novelId: number | undefined, path: string, body: unknown): Promise<any> {
+    try {
+      const r = await this.jsonRequest(path, body);
+      const u = r?.usage ?? {};
+      this.recordTask({ type, novelId, status: 'success', tokensIn: u.in ?? 0, tokensOut: u.out ?? 0, cached: !!r?.cached, model: u.model ?? null });
+      return r;
+    } catch (e) {
+      this.recordTask({ type, novelId, status: 'error', error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
+  }
+
   private recordTask(data: { type: string; novelId?: number; chapterId?: number; status: string; tokensIn?: number; tokensOut?: number; cached?: boolean; model?: string | null; error?: string }) {
     // best-effort，不抛
     this.prisma.aiTask
@@ -52,6 +65,13 @@ export class AiService {
         error: data.error ?? null,
       } })
       .catch(() => undefined);
+  }
+
+  /** GET 请求到 ai-service（配置读取等）。 */
+  async getRequest(path: string): Promise<any> {
+    const r = await fetch(`${this.baseUrl}${path}`);
+    if (!r.ok) throw new BadGatewayException(`AI service ${r.status}`);
+    return r.json();
   }
 
   async jsonRequest(path: string, body: unknown): Promise<any> {
@@ -129,8 +149,8 @@ export class AiService {
     res.end();
   }
 
-  /** 服务端消费 SSE 流，累积 token 成完整文本（批量生成正文用）。 */
-  async collectStream(path: string, body: unknown): Promise<string> {
+  /** 服务端消费 SSE 流，累积 token 成完整文本（批量生成正文用）。返回 { text, usage }。 */
+  async collectStream(path: string, body: unknown): Promise<{ text: string; usage?: { in: number; out: number; model?: string | null } }> {
     let upstream: Awaited<ReturnType<typeof fetch>>;
     try {
       upstream = await fetch(`${this.baseUrl}${path}`, {
@@ -149,6 +169,7 @@ export class AiService {
     const decoder = new TextDecoder();
     let buffer = '';
     let acc = '';
+    let usage: { in: number; out: number; model?: string | null } | undefined;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const { done, value } = await reader.read();
@@ -162,15 +183,16 @@ export class AiService {
         if (ev.type === 'error') {
           throw new BadGatewayException(`生成失败：${ev.data.slice(0, 300)}`);
         }
-        if (ev.data === '[DONE]') return acc;
+        if (ev.data === '[DONE]') return { text: acc, usage };
         try {
           const j = JSON.parse(ev.data);
           if (j.token) acc += j.token;
+          if (j.usage) usage = { in: j.usage.in ?? 0, out: j.usage.out ?? 0, model: j.usage.model ?? null };
         } catch {
           /* ignore */
         }
       }
     }
-    return acc;
+    return { text: acc, usage };
   }
 }

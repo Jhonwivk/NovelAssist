@@ -26,3 +26,19 @@ export class VolumesController {
     return this.volumes.remove(id);
   }
 }
+
+/** 独立项路由（不依赖 novelId 参数）—— 供前端 /volumes/:id 直连 */
+@Controller('volumes')
+export class VolumesItemController {
+  constructor(private readonly volumes: VolumesService) {}
+
+  @Patch(':id')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVolumeDto) {
+    return this.volumes.update(id, dto);
+  }
+
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.volumes.remove(id);
+  }
+}

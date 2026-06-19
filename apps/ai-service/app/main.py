@@ -30,6 +30,8 @@ from .schemas import (
     ContinueRequest,
     ExtractRequest,
     HookRequest,
+    HumanizeRequest,
+    BeatsRequest,
     IdeaRequest,
     LocalEditRequest,
     OutlineRequest,
@@ -38,6 +40,7 @@ from .schemas import (
     PolishRequest,
     ReviewRequest,
     StyleGuardRequest,
+    FixIssueRequest,
     SummarizeRequest,
     SynopsisRequest,
     TitleRequest,
@@ -66,11 +69,15 @@ def health() -> dict:
 
 # ---------------- 通用工具 ----------------
 
-async def _sse(gen: AsyncIterator[str]) -> AsyncIterator[str]:
-    """token 流 → SSE；流中异常转 error 事件。"""
+async def _sse(gen: AsyncIterator[str], model: str = None, in_chars: int = 0) -> AsyncIterator[str]:
+    """token 流 → SSE；流末发 usage 事件（供后端记账）。流中异常转 error 事件。"""
+    acc = ""
     try:
         async for token in gen:
+            acc += token
             yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+        usage = {"in": est_tokens(" " * in_chars), "out": est_tokens(acc), "model": model, "cached": False}
+        yield f"data: {json.dumps({'usage': usage}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:  # noqa: BLE001
         yield f"event: error\ndata: {json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
@@ -92,8 +99,9 @@ def _stream(tier: str, system: str, messages: list[dict], temperature: float):
         provider, model = router.resolve(tier)
     except RuntimeError as e:
         return JSONResponse({"error": str(e)}, status_code=503)
+    in_chars = len(system or "") + sum(len((m or {}).get("content", "")) for m in (messages or []))
     return StreamingResponse(
-        _sse(provider.stream(system, messages, model, temperature)),
+        _sse(provider.stream(system, messages, model, temperature), model=model, in_chars=in_chars),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -324,6 +332,42 @@ async def style_guard_ep(req: StyleGuardRequest):
         return JSONResponse({"error": str(e)}, status_code=503)
 
 
+@app.post("/fix-issue")
+async def fix_issue_ep(req: FixIssueRequest):
+    try:
+        r = await _chat_cached("fix-issue", "medium", req.model_dump(), lambda: prompts.fix_issue(req), 0.4)
+    except _NoProvider as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    return r
+
+
+# ================ 去AI味（两遍：去套路 → 自审残留 → 终稿）================
+
+@app.post("/humanize")
+async def humanize_ep(req: HumanizeRequest):
+    """两遍去AI味润色，返回终稿正文。"""
+    try:
+        p1 = await _chat_cached("humanize-1", "medium", {"len": len(req.text)}, lambda: prompts.humanize_pass1(req), 0.7)
+        draft1 = p1.get("content", "") or req.text
+        wrapped = HumanizeRequest(text=draft1)
+        p2 = await _chat_cached("humanize-2", "medium", {"len": len(draft1)}, lambda: prompts.humanize_pass2(wrapped), 0.7)
+        final = p2.get("content", "") or draft1
+        return {"content": final, "draft": draft1, "usage": {"in": 0, "out": len(final)}}
+    except _NoProvider as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+
+@app.post("/chapter-beats")
+async def chapter_beats_ep(req: BeatsRequest):
+    """章纲 → 4-6 拍分解（文本列表，供逐拍扩写）。"""
+    try:
+        r = await _chat_cached("chapter-beats", "medium", req.model_dump(), lambda: prompts.chapter_beats(req), 0.5)
+        beats = [ln for ln in (r.get("content", "") or "").splitlines() if ln.strip()]
+        return {"beats": beats, "raw": r.get("content", "")}
+    except _NoProvider as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+
 # ================ 工具：嵌入 / 缓存统计 ================
 
 @app.post("/embed")
@@ -338,3 +382,76 @@ async def embed_ep(body: dict):
 @app.get("/cache-stats")
 def cache_stats() -> dict:
     return {k: len(v) for k, v in cache._store.items()}
+
+
+# ================ 配置读写（供主页 API 配置面板）================
+
+@app.get("/config")
+def get_config() -> dict:
+    return {
+        "providers": router.available_list(),
+        "has_token": bool(settings.anthropic_auth_token or settings.openai_api_key or settings.deepseek_api_key),
+        "base_url": settings.anthropic_base_url,
+        "model": settings.model_medium,
+        "embedding": True,
+    }
+
+
+@app.post("/config")
+def set_config(body: dict):
+    """更新 .env 并触发热重载。
+
+    开发：写 apps/ai-service/.env + os.utime 触发 uvicorn --reload。
+    打包：写 NA_ENV_FILE（userData，可写）——此时无 --reload，由 Electron 主进程
+    监听该文件变化后重启 ai-service（见 desktop/main.cjs 的 watchAiEnv）。
+    """
+    import os
+    from pathlib import Path
+
+    env_path = Path(os.environ.get("NA_ENV_FILE") or (Path(__file__).parent.parent / ".env"))
+    if not env_path.exists():
+        return {"error": ".env not found"}, 404
+
+    updates = {}
+    if body.get("token"):
+        updates["ANTHROPIC_AUTH_TOKEN"] = body["token"]
+    if body.get("base_url"):
+        updates["ANTHROPIC_BASE_URL"] = body["base_url"]
+    if body.get("model"):
+        for k in ("MODEL_SMALL", "MODEL_MEDIUM", "MODEL_LARGE", "ANTHROPIC_DEFAULT_MODEL"):
+            updates[k] = body["model"]
+    # 多 provider 切换：可选 DeepSeek / OpenAI 密钥与端点
+    if body.get("deepseek_key"):
+        updates["DEEPSEEK_API_KEY"] = body["deepseek_key"]
+    if body.get("deepseek_base_url"):
+        updates["DEEPSEEK_BASE_URL"] = body["deepseek_base_url"]
+    if body.get("openai_key"):
+        updates["OPENAI_API_KEY"] = body["openai_key"]
+    if body.get("openai_base_url"):
+        updates["OPENAI_BASE_URL"] = body["openai_base_url"]
+    # 一键切换所有 tier 的 provider/model
+    if body.get("provider") and body.get("model"):
+        for tier in ("SMALL", "MEDIUM", "LARGE"):
+            updates[f"PROVIDER_{tier}"] = body["provider"]
+            updates[f"MODEL_{tier}"] = body["model"]
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    for line in lines:
+        replaced = False
+        for k, v in updates.items():
+            if line.strip().startswith(k + "="):
+                new_lines.append(f'{k}="{v}"')
+                replaced = True
+                break
+        if not replaced:
+            new_lines.append(line)
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    # 仅开发模式触发 uvicorn --reload（打包后 app/ 只读，且无 --reload）
+    if not os.environ.get("NA_ENV_FILE"):
+        try:
+            os.utime(Path(__file__), None)
+        except OSError:
+            pass
+    return {"status": "reloading"}

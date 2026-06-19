@@ -2,6 +2,14 @@ import type { Bible, Chapter, Novel } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
+export interface ChapterGate {
+  passed: boolean;
+  highIssues: number;
+  totalIssues: number;
+  overlapPrev: number;
+  warnings: string[];
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
@@ -31,7 +39,7 @@ export const apiClient = {
   // chapters
   listChapters: (novelId: number) => api<Chapter[]>(`/novels/${novelId}/chapters`),
   getChapter: (id: number) => api<Chapter>(`/chapters/${id}`),
-  createChapter: (novelId: number, data: { title: string; outlineText?: string }) =>
+  createChapter: (novelId: number, data: { title: string; outlineText?: string; volumeId?: number }) =>
     api<Chapter>(`/novels/${novelId}/chapters`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -40,6 +48,18 @@ export const apiClient = {
     api<Chapter>(`/chapters/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteChapter: (id: number) =>
     api<{ id: number }>(`/chapters/${id}`, { method: 'DELETE' }),
+
+  // 后台分析（L1 抽取 + 一致性 + 摘要，fire-and-forget）
+  analyzeChapter: (id: number) =>
+    api<{ id: number; status: string }>(`/chapters/${id}/analyze`, { method: 'POST' }),
+
+  // 分卷
+  createVolume: (novelId: number, data: { title: string; order?: number }) =>
+    api<any>(`/novels/${novelId}/volumes`, { method: 'POST', body: JSON.stringify(data) }),
+  updateVolume: (id: number, data: Partial<{ title: string; order: number; summary: string }>) =>
+    api<any>(`/volumes/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteVolume: (id: number) =>
+    api<any>(`/volumes/${id}`, { method: 'DELETE' }),
 
   // bible
   getBible: (novelId: number) => api<Bible>(`/novels/${novelId}/bible`),
@@ -84,6 +104,8 @@ export const apiClient = {
     api<any[]>(`/consistency/issues?novelId=${novelId}`),
   resolveIssue: (id: number, status: 'resolved' | 'ignored' | 'intentional') =>
     api<any>(`/consistency/issues/${id}/resolve`, { method: 'POST', body: JSON.stringify({ status }) }),
+  fixIssue: (id: number) =>
+    api<{ success: boolean; message: string }>(`/consistency/issues/${id}/fix`, { method: 'POST' }),
 
   // 伏笔
   listForeshadows: (novelId: number) =>
@@ -124,6 +146,11 @@ export const apiClient = {
   costStats: (novelId?: number) =>
     api<any>(`/stats/cost${novelId ? `?novelId=${novelId}` : ''}`),
 
+  // API 配置
+  getConfig: () => api<any>('/config'),
+  setConfig: (data: { token?: string; base_url?: string; model?: string }) =>
+    api<any>('/config', { method: 'POST', body: JSON.stringify(data) }),
+
   // AI 非流式（灵感/书名/简介/钩子/审稿）
   aiIdea: (data: any) => api<any>('/ai/idea', { method: 'POST', body: JSON.stringify(data) }),
   aiTitle: (novelId: number, instruction?: string) =>
@@ -138,8 +165,9 @@ export const apiClient = {
     api<any>('/ai/outline/optimize', { method: 'POST', body: JSON.stringify({ novelId, currentOutline, instruction }) }),
   aiOutlineChapters: (novelId: number, count: number, instruction?: string) =>
     api<any>('/ai/outline/chapters', { method: 'POST', body: JSON.stringify({ novelId, count, instruction }) }),
+  // 统一章节流水线：生成正文 → 落库 → 同步分析 → 门禁（批量/整书生成走此入口）
   generateChapterContent: (chapterId: number) =>
-    api<{ id: number; wordCount: number; length: number }>(`/ai/chapter/${chapterId}/generate`, { method: 'POST' }),
+    api<{ id: number; wordCount: number; gate?: ChapterGate }>(`/chapters/${chapterId}/write`, { method: 'POST' }),
 
   // 设定模板
   listTemplates: () => api<any[]>('/templates'),
@@ -149,6 +177,25 @@ export const apiClient = {
     api<any>(`/templates/${id}`, { method: 'DELETE' }),
   aiReview: (chapterId: number) =>
     api<any>('/ai/review', { method: 'POST', body: JSON.stringify({ chapterId }) }),
+
+  // 整书编排 + 门禁 + 去AI味 + Beat分解（P0/P1/P2 新增）
+  autopilot: (novelId: number, opts: { target?: number; wave?: number; targetWords?: number }) =>
+    api<{ written: number; gateFailed: number; failed: number; total: number }>(
+      `/novels/${novelId}/autopilot`,
+      { method: 'POST', body: JSON.stringify(opts) },
+    ),
+  analyzeAll: (novelId: number) =>
+    api<{ analyzed: number; failed: number; total: number }>(
+      `/novels/${novelId}/analyze-all`,
+      { method: 'POST' },
+    ),
+  chapterGate: (chapterId: number) => api<ChapterGate>(`/chapters/${chapterId}/gate`),
+  humanize: (chapterId: number) =>
+    api<{ id: number; wordCount: number; snapshotId: number }>(`/ai/humanize/${chapterId}`, { method: 'POST' }),
+  chapterBeats: (novelId: number, data: { chapterTitle?: string; outline: string; instruction?: string }) =>
+    api<{ beats: string[] }>(`/ai/chapter-beats`, { method: 'POST', body: JSON.stringify({ novelId, ...data }) }),
+  refreshVolume: (novelId: number, volumeId?: number) =>
+    api<any>(`/memory/volume/${novelId}${volumeId ? `?volumeId=${volumeId}` : ''}`, { method: 'POST' }),
 };
 
 // ---- SSE 流式（AI 生成）----
