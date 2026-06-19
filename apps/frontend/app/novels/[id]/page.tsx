@@ -8,7 +8,7 @@ import {
   Download, Layers, ListOrdered, MoreHorizontal, MoreVertical, PenLine, Plus, Sparkles, Trash2, Pencil, Wand2,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api';
-import { AiChat, ConsistencyPanel, CostPanel, IdeaTools } from '@/components/workbench-panels';
+import { AiChat, ConsistencyPanel, CostPanel } from '@/components/workbench-panels';
 import { BatchChaptersModal } from '@/components/batch-chapters-modal';
 import { AutopilotModal } from '@/components/autopilot-modal';
 import { EntityBrowser } from '@/components/entity-browser';
@@ -175,7 +175,6 @@ export default function WorkbenchPage({ params }: { params: { id: string } }) {
           {tab === 'bible' && <EntityBrowser novelId={novelId} />}
           {tab === 'outline' && <OutlinePanel novelId={novelId} />}
           {tab === 'chat' && <AiChat novelId={novelId} />}
-          {tab === 'idea' && <IdeaTools novelId={novelId} />}
           {tab === 'consistency' && <ConsistencyPanel novelId={novelId} />}
           {tab === 'insight' && <KnowledgeView novelId={novelId} />}
           {tab === 'cost' && <CostPanel novelId={novelId} />}

@@ -1,10 +1,10 @@
 'use client';
 
-import { AlignLeft, BarChart3, BookOpen, Bot, Lightbulb, ListOrdered, Network, Sparkles, LucideIcon } from 'lucide-react';
+import { AlignLeft, BarChart3, BookOpen, Bot, ListOrdered, Network, Sparkles, LucideIcon } from 'lucide-react';
 import { NavItem } from './ui';
 
 export type WorkbenchTab =
-  | 'chapters' | 'outline' | 'idea'
+  | 'chapters' | 'outline'
   | 'bible'
   | 'consistency' | 'insight'
   | 'chat' | 'cost';
@@ -16,7 +16,6 @@ const GROUPS: Group[] = [
   { title: '创作', leaves: [
     { key: 'chapters', label: '章节', icon: ListOrdered },
     { key: 'outline', label: '大纲', icon: AlignLeft },
-    { key: 'idea', label: '灵感', icon: Lightbulb },
   ]},
   { title: '设定', leaves: [
     { key: 'bible', label: '设定库', icon: BookOpen },
@@ -55,12 +54,11 @@ export function WorkbenchNav({ tab, setTab, chapterCount, issueCount }: { tab: W
   );
 }
 
-/** 旧版 12 个 tab key → 新版（设定/物品/地点 合并；关系图/时间线/伏笔 合并）。 */
+/** 旧版 tab key → 新版（灵感并入大纲；设定/物品/地点 合并；关系图/时间线/伏笔 合并）。 */
 export function mapLegacyTab(raw: string | null): WorkbenchTab {
   switch (raw) {
     case 'chapters': return 'chapters';
-    case 'outline': return 'outline';
-    case 'idea': return 'idea';
+    case 'outline': case 'idea': return 'outline';
     case 'bible': case 'items': case 'locations': return 'bible';
     case 'consistency': return 'consistency';
     case 'graph': case 'timeline': case 'foreshadow': return 'insight';
